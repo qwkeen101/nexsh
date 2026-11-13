@@ -46,6 +46,7 @@ shell-rs 和 nexsh 技术栈相同，最容易写得像。参考它之后，nexs
 - 注释和面向用户的文字用中文；标识符用英文。
 - 注释说明"为什么"，不复述代码在做什么。
 - `nexsh-core` 和 `nexsh-term` 不得依赖任何界面框架，要能脱离窗口系统编译和测试。
+- 手机端的逻辑放在 `nexsh-mobile` 的 `engine`、`hosts`、`wire` 里并配单元测试；Kotlin 一侧只做界面，不重写校验和协议。
 - 新增逻辑尽量放在这两个 crate 里并配单元测试；界面层保持薄。
 - 网络 IO 只在 `nexsh_core::runtime()` 上运行，界面线程不阻塞。
 - 密码、口令、私钥内容不写入配置文件和日志。
@@ -55,3 +56,7 @@ shell-rs 和 nexsh 技术栈相同，最容易写得像。参考它之后，nexs
 - 开发机不编译本项目；代码推送到 GitHub 后由 Actions 在 Linux、macOS、Windows 上测试和编译。
 - 写代码时对照依赖库当前版本的源码核对接口，不凭记忆。
 - 提交后查看 Actions 结果，失败则修复后再继续下一项工作。
+- 界面改动要看截图再下结论，不凭想象。CI 每次构建后会启动程序截图：
+  桌面端推到 `ci-screenshots` 分支（脚本 `.github/scripts/screenshot.ps1`），
+  手机端在模拟器里跑一遍后推到 `ci-screenshots-mobile` 分支（`.github/scripts/android-smoke.sh`）。
+  改了布局就同步改脚本里的点击位置，并在需要时加新的截图步骤。
