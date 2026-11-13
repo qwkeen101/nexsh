@@ -137,6 +137,60 @@ adb shell am start -n dev.nexsh.mobile/.MainActivity
 sleep 4
 shot m15-after-background
 
+# ---- 从剪贴板导入 PEM 私钥，再用它连接 ----
+# 这是用户实际走的路：复制一把 RSA 的 PEM 私钥 → 主机表单里"从剪贴板粘贴" → 起名保存 → 连接。
+# 模拟器没有直接写剪贴板的命令，所以把私钥敲进地址栏再全选复制。这样进剪贴板的私钥
+# 是一整行（换行成了空格），正好连"换行丢失"的修复一起测到。
+rm -f /tmp/nexsh_ci_rsa /tmp/nexsh_ci_rsa.pub
+ssh-keygen -q -t rsa -b 2048 -m PEM -N "" -f /tmp/nexsh_ci_rsa
+cat /tmp/nexsh_ci_rsa.pub >> ~/.ssh/authorized_keys
+head -1 /tmp/nexsh_ci_rsa > shots/pem-header.txt
+
+adb shell am force-stop dev.nexsh.mobile
+adb shell "run-as dev.nexsh.mobile sh -c 'rm -f files/hosts.toml'"
+adb shell am start -W -n dev.nexsh.mobile/.MainActivity
+sleep 5
+adb shell input tap $((w - 126)) $((h - 220))
+sleep 2
+adb shell input tap 300 460
+sleep 1
+# 开头的 %s（空格）是为了不让 input 把 ----- 当成命令行选项。
+adb shell input text "%s$(tr '\n' ' ' < /tmp/nexsh_ci_rsa | sed 's/ *$//; s/ /%s/g')"
+sleep 2
+adb shell input keycombination 113 29
+adb shell input keycombination 113 31
+sleep 1
+adb shell input keycombination 113 29
+adb shell input keyevent KEYCODE_DEL
+adb shell input text "10.0.2.2"
+adb shell input tap 300 705
+sleep 1
+adb shell input text "$(id -un)"
+# 收起键盘，后面的点击位置才和没有键盘时一样。
+adb shell input keyevent KEYCODE_BACK
+sleep 1
+shot m16-pem-form
+
+adb shell input tap $((w * 3 / 4)) 940
+sleep 1
+adb shell input tap $((w / 2)) 1190
+sleep 2
+# 对话框里的"从剪贴板粘贴"。
+adb shell input tap 543 1265
+sleep 2
+shot m17-save-key
+# "保存私钥"对话框右下角的"保存"。
+adb shell input tap 820 1500
+sleep 2
+shot m18-key-chosen
+# 保存主机，点开连接。
+adb shell input tap $((w - 90)) 205
+sleep 2
+shot m19-host-saved
+adb shell input tap 400 490
+sleep 8
+shot m20-pem-login
+
 adb shell pidof dev.nexsh.mobile || echo "应用已经不在运行"
 adb logcat -d -t 400 "*:W" > shots/logcat.txt
 exit 0

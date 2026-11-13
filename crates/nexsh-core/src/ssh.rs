@@ -113,14 +113,61 @@ fn key_info(key: &keys::PrivateKey) -> KeyInfo {
     }
 }
 
-/// 解析私钥文字。从聊天软件、网页里复制出来的私钥常带着行首行尾的空白和 Windows 换行，
-/// 解析器按整行比对 BEGIN/END 标记，所以先逐行去掉空白。
-fn decode_key(text: &str, passphrase: Option<&str>) -> Result<keys::PrivateKey, keys::Error> {
-    let mut clean = String::with_capacity(text.len() + 1);
-    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        clean.push_str(line);
-        clean.push('\n');
+/// 把复制粘贴弄乱的私钥文字整理回解析器认得的样子。解析器按整行比对 BEGIN/END 标记，
+/// 而从聊天软件、网页、JSON 里复制出来的私钥常常：行首行尾带空白、用 Windows 换行、
+/// 换行被压成了空格（整把私钥变成一行）、换行写成了字面的 `\n`、开头带 BOM。
+///
+/// PEM 的内容只有三种东西：BEGIN/END 标记、`名称: 值` 形式的头（老式加密私钥有）、base64。
+/// base64 里没有空白，所以按空白拆开再一行一个地放回去，不会改变内容。
+fn tidy_key_text(text: &str) -> String {
+    const DASHES: &str = "-----";
+    let text = text.trim_start_matches('\u{feff}').replace("\\r", "").replace("\\n", "\n");
+    let mut out = String::with_capacity(text.len() + 16);
+    if !text.contains("-----BEGIN ") {
+        // 不是 PEM（PuTTY 格式等）：行内的空格有意义，只去掉行首行尾的空白和空行。
+        for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+            out.push_str(line);
+            out.push('\n');
+        }
+        return out;
     }
+    let body = |out: &mut String, part: &str| {
+        let mut tokens = part.split_whitespace();
+        while let Some(token) = tokens.next() {
+            out.push_str(token);
+            // "Proc-Type: 4,ENCRYPTED" 这样的头：冒号后面的值和它在同一行。
+            if token.ends_with(':') {
+                if let Some(value) = tokens.next() {
+                    out.push(' ');
+                    out.push_str(value);
+                }
+            }
+            out.push('\n');
+        }
+    };
+    let mut rest = text.as_str();
+    while let Some(start) = rest.find(DASHES) {
+        body(&mut out, &rest[..start]);
+        let after = &rest[start + DASHES.len()..];
+        let Some(end) = after.find(DASHES) else {
+            rest = after;
+            break;
+        };
+        // 标记独占一行，里面的词之间只留一个空格。
+        let label: Vec<&str> = after[..end].split_whitespace().collect();
+        out.push_str(DASHES);
+        out.push_str(&label.join(" "));
+        out.push_str(DASHES);
+        out.push('\n');
+        rest = &after[end + DASHES.len()..];
+    }
+    body(&mut out, rest);
+    out
+}
+
+/// 解析私钥文字，先经过 [`tidy_key_text`] 整理。
+fn decode_key(text: &str, passphrase: Option<&str>) -> Result<keys::PrivateKey, keys::Error> {
+    let clean = tidy_key_text(text);
     // PuTTY 格式的加密私钥在没给口令时报的是普通的解析错误，这里统一成"需要口令"。
     let putty_encrypted = clean.starts_with("PuTTY-User-Key-File-")
         && clean.lines().any(|line| {
@@ -471,7 +518,13 @@ async fn authenticate(
     options: &ConnectOptions,
 ) -> Result<(), SshError> {
     let user = options.host.user.as_str();
-    let rsa_hash = handle.best_supported_rsa_hash().await?.flatten();
+    // RSA 私钥签名时用哪种哈希。服务器说了支持什么就用它说的；没说（不发 server-sig-algs 的服务器）
+    // 就先试现在通用的 SHA-256，不行再退回老的 SHA-1——只用 SHA-1 会被新版 OpenSSH 直接拒绝。
+    let rsa_hashes = match handle.best_supported_rsa_hash().await? {
+        Some(hash) => vec![hash],
+        None => vec![Some(HashAlg::Sha256), None],
+    };
+    let rsa_hash = rsa_hashes[0];
     let mut tried = Vec::new();
 
     let method = options.host.auth;
@@ -511,9 +564,15 @@ async fn authenticate(
         };
         match loaded {
             Ok(key) => {
-                let key = PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash);
-                if handle.authenticate_publickey(user, key).await?.success() {
-                    return Ok(());
+                let key = Arc::new(key);
+                // 哈希的选择只对 RSA 有意义，其他算法试一次就够。
+                let hashes: &[Option<HashAlg>] =
+                    if key.algorithm().is_rsa() { &rsa_hashes } else { &[None] };
+                for hash in hashes {
+                    let signer = PrivateKeyWithHashAlg::new(key.clone(), *hash);
+                    if handle.authenticate_publickey(user, signer).await?.success() {
+                        return Ok(());
+                    }
                 }
                 tried.push(label);
             }
@@ -624,6 +683,37 @@ aC1iNWDhHq2vl8dA==\n\
         let info = inspect_key(PLAIN_KEY, None).unwrap();
         assert_eq!(info.algorithm, "ssh-ed25519");
         assert_eq!(info.fingerprint, "SHA256:HNqfXvoiwH/1RzepruUjvTB2l6kyum10jGTbbo+AUWM");
+    }
+
+    #[test]
+    fn repairs_a_key_whose_line_breaks_were_lost() {
+        let expected = inspect_key(PLAIN_KEY, None);
+        // 换行全变成了空格：整把私钥是一行。
+        let one_line = PLAIN_KEY.replace('\n', " ");
+        assert_eq!(inspect_key(&one_line, None), expected);
+        // 换行写成了字面的 \n（从 JSON 里复制出来的），开头还带着 BOM 和别的文字。
+        let escaped = format!("\u{feff}key: {}", PLAIN_KEY.replace('\n', "\\n"));
+        assert_eq!(inspect_key(&escaped, None), expected);
+        // 加密私钥同样修得好，口令照常验证。
+        let encrypted = ENCRYPTED_KEY.replace('\n', "  ");
+        assert_eq!(inspect_key(&encrypted, None), Err(KeyProblem::Encrypted));
+        assert!(inspect_key(&encrypted, Some("nexsh")).is_ok());
+    }
+
+    #[test]
+    fn tidying_keeps_pem_headers_on_one_line() {
+        let legacy = "-----BEGIN RSA PRIVATE KEY----- Proc-Type: 4,ENCRYPTED \
+                      DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF AAAA BBBB \
+                      -----END RSA PRIVATE KEY-----";
+        assert_eq!(
+            tidy_key_text(legacy),
+            "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\n\
+             DEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\nAAAA\nBBBB\n\
+             -----END RSA PRIVATE KEY-----\n"
+        );
+        // PuTTY 格式不是 PEM，行内的空格原样保留。
+        assert_eq!(tidy_key_text("PuTTY-User-Key-File-3: ssh-ed25519 \r\nEncryption: none\r\n"),
+            "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\n");
     }
 
     #[test]

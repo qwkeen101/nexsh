@@ -68,6 +68,8 @@ struct Inner {
     credentials: Credentials,
     /// 主机只允许私钥登录：这时认证失败和密码无关。
     key_only: bool,
+    /// 登录用户名，写进认证失败的提示里。
+    user: String,
     /// 正在进行第几次重连；0 表示不在重连。
     attempt: u32,
     /// 最近排出的那次重连的编号，以及它是否还在等待。提前重连或取消之后，
@@ -194,6 +196,19 @@ impl Inner {
                 self.credentials.password = None;
                 (State::NeedsPassword, "密码不正确".to_string())
             }
+            // 只用私钥的主机认证失败，原因只有两种，直接说该查什么，而不是一句"认证失败"。
+            SshError::AuthFailed { tried } if self.key_only => {
+                let message = if tried.is_empty() {
+                    "这台主机还没有选择私钥，或者选的那一把已经被删除。请编辑主机重新选择".to_string()
+                } else {
+                    format!(
+                        "服务器没有接受这把私钥。请确认登录用户名（{}）正确，\
+                         并且这把私钥对应的公钥已经加进服务器上该用户的 authorized_keys",
+                        self.user
+                    )
+                };
+                (State::Failed, message)
+            }
             other => (State::Failed, other.to_string()),
         };
         self.settle(state, message);
@@ -216,6 +231,7 @@ impl Session {
         credentials: Credentials,
     ) -> Self {
         let key_only = host.auth == AuthMethod::Key;
+        let user = host.user.clone();
         Self {
             host,
             known_hosts,
@@ -229,6 +245,7 @@ impl Session {
                 epoch: 0,
                 credentials,
                 key_only,
+                user,
                 attempt: 0,
                 ticket: 0,
                 waiting: false,
@@ -606,6 +623,11 @@ mod tests {
         let session = Session::new(host, PathBuf::from("known_hosts"), 20, 4, credentials);
         feed(&session, SessionEvent::Failed(SshError::AuthFailed { tried: vec![] }));
         assert_eq!(state(&session), State::Failed);
+        assert!(session.lock().message.contains("还没有选择私钥"));
+        // 私钥试过了但服务器不认：提示里带上用户名，告诉用户该查什么。
+        let rejected = SshError::AuthFailed { tried: vec!["导入的私钥".to_string()] };
+        feed(&session, SessionEvent::Failed(rejected));
+        assert!(session.lock().message.contains("（tester）"));
     }
 
     #[test]
