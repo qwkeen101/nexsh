@@ -113,9 +113,11 @@ pub extern "system" fn Java_dev_nexsh_mobile_Bridge_inspectKey<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     text: JString<'local>,
+    passphrase: JString<'local>,
 ) -> jstring {
     let text = string(&mut env, &text).unwrap_or_default();
-    java_string(&mut env, &describe_key(&text))
+    let passphrase = string(&mut env, &passphrase).unwrap_or_default();
+    java_string(&mut env, &describe_key(&text, &passphrase))
 }
 
 /// 打开到已保存主机的会话，返回会话编号；找不到这台主机时返回 0。

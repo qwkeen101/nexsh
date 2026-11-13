@@ -53,19 +53,24 @@ fn failure(errors: Vec<(&str, String)>) -> String {
     json!({ "ok": false, "errors": errors }).to_string()
 }
 
-/// 检查一段文字是不是私钥，给导入界面显示。返回
-/// `{"ok":true,"encrypted":false,"algorithm":…,"fingerprint":…}`、
-/// `{"ok":true,"encrypted":true}`（有口令保护，看不到更多）或 `{"ok":false,"message":…}`。
-pub fn describe_key(text: &str) -> String {
-    match inspect_key(text, None) {
+/// 检查一段文字是不是私钥，给导入界面显示。`passphrase` 为空等同于没给。返回
+/// `{"ok":true,"encrypted":…,"algorithm":…,"fingerprint":…}`；有口令保护而没给口令时
+/// 只有 `{"ok":true,"encrypted":true}`（看不到更多）。不能用时是
+/// `{"ok":false,"field":"key"|"passphrase","message":…}`。
+pub fn describe_key(text: &str, passphrase: &str) -> String {
+    let encrypted = matches!(inspect_key(text, None), Err(KeyProblem::Encrypted));
+    match inspect_key(text, Some(passphrase)) {
         Ok(info) => json!({
             "ok": true,
-            "encrypted": false,
+            "encrypted": encrypted,
             "algorithm": info.algorithm,
             "fingerprint": info.fingerprint,
         }),
         Err(KeyProblem::Encrypted) => json!({ "ok": true, "encrypted": true }),
-        Err(_) => json!({ "ok": false, "message": NOT_A_KEY }),
+        Err(KeyProblem::WrongPassphrase) => {
+            json!({ "ok": false, "field": "passphrase", "message": "口令不正确" })
+        }
+        Err(KeyProblem::Invalid(_)) => json!({ "ok": false, "field": "key", "message": NOT_A_KEY }),
     }
     .to_string()
 }
@@ -219,8 +224,10 @@ mod tests {
 
     #[test]
     fn describes_what_is_not_a_key() {
-        let reply: Value = serde_json::from_str(&describe_key("ssh-ed25519 AAAA me@host")).unwrap();
+        let reply: Value =
+            serde_json::from_str(&describe_key("ssh-ed25519 AAAA me@host", "")).unwrap();
         assert_eq!(reply["ok"], false);
+        assert_eq!(reply["field"], "key");
         assert!(reply["message"].as_str().unwrap().contains("公钥"));
     }
 

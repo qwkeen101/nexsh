@@ -258,7 +258,8 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
                     // 先改状态再重连：核心回报新状态之前，对话框不该再闪一下。
                     state.intValue = Frame.CONNECTING
                     if (forKey) {
-                        if (keep) secrets.store(Secrets.passphrase(session.host), secret)
+                        // 口令属于私钥而不是主机：记住之后，用同一把私钥的其他主机也不用再输。
+                        if (keep) secrets.hostKey(session.host)?.let { secrets.rememberKeyPassphrase(it, secret) }
                         Bridge.reconnect(session.id, null, secret)
                     } else {
                         if (keep) secrets.store(Secrets.password(session.host), secret)

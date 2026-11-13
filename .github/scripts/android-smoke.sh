@@ -23,10 +23,15 @@ adb shell input tap $((w - 126)) $((h - 220))
 sleep 2
 shot m02-add
 
-# 登录方式切到"私钥"看一眼导入区域，再切回"密码"。
+# 登录方式切到"私钥"，点开私钥选择对话框看一眼，再关掉并切回"密码"。
 adb shell input tap $((w * 3 / 4)) 940
 sleep 1
 shot m02b-key-mode
+adb shell input tap $((w / 2)) 1190
+sleep 2
+shot m02c-key-picker
+adb shell input keyevent KEYCODE_BACK
+sleep 1
 adb shell input tap $((w / 4)) 940
 sleep 1
 

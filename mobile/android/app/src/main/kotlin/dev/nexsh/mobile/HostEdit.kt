@@ -1,7 +1,5 @@
 package dev.nexsh.mobile
 
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -35,8 +33,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -47,27 +43,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.json.JSONObject
 
-/** 表单里填的凭据，保存主机之后由调用方加密存起来。没填的是空字符串。 */
+/** 表单里填的凭据，保存主机之后由调用方存起来。 */
 data class HostCredentials(
     val useKey: Boolean,
+    /** 没填是空字符串，表示保持原样。 */
     val password: String,
-    /** 这次新导入的私钥内容；沿用之前存的那把时为空。 */
-    val key: String,
-    val passphrase: String,
+    /** 私钥库里那一把的名称；密码登录时为 null。 */
+    val keyName: String?,
 )
-
-/** 私钥文件只有几 KB。限制读取量，选错了大文件也不会卡住界面。 */
-private const val MAX_KEY_BYTES = 64 * 1024
-
-/** 一把私钥的一行描述，如 "ED25519 · SHA256:…"；这段文字不是私钥时返回 null。 */
-fun keySummary(text: String): String? {
-    val reply = JSONObject(Bridge.inspectKey(text))
-    return when {
-        !reply.optBoolean("ok") -> null
-        reply.optBoolean("encrypted") -> "有口令保护的私钥"
-        else -> reply.optString("algorithm").removePrefix("ssh-").uppercase() + " · " + reply.optString("fingerprint")
-    }
-}
 
 /**
  * 添加或编辑主机。字段的校验规则在 Rust 核心里（和桌面端是同一份），
@@ -77,15 +60,11 @@ fun keySummary(text: String): String? {
 fun HostEditScreen(
     original: HostItem?,
     groups: List<String>,
-    hasSavedPassword: Boolean,
-    /** 已经存着的私钥的描述；没有存过为 null。 */
-    savedKey: String?,
-    hasSavedPassphrase: Boolean,
+    secrets: Secrets,
     onCancel: () -> Unit,
     onSaved: (name: String, credentials: HostCredentials) -> Unit,
 ) {
-    val context = LocalContext.current
-    val clipboard = LocalClipboardManager.current
+    val hasSavedPassword = remember { original != null && secrets.load(Secrets.password(original.name)) != null }
     var address by remember { mutableStateOf(original?.hostname ?: "") }
     var port by remember { mutableStateOf(original?.port?.toString() ?: "") }
     var user by remember { mutableStateOf(original?.user ?: "") }
@@ -94,46 +73,9 @@ fun HostEditScreen(
     var note by remember { mutableStateOf(original?.note ?: "") }
     var password by remember { mutableStateOf("") }
     var useKey by remember { mutableStateOf(original?.auth == "key") }
-    var key by remember { mutableStateOf("") }
-    var keyLabel by remember { mutableStateOf(savedKey) }
-    var passphrase by remember { mutableStateOf("") }
+    var keyName by remember { mutableStateOf(original?.let { secrets.hostKey(it.name) }) }
+    var choosingKey by remember { mutableStateOf(false) }
     var errors by remember { mutableStateOf(mapOf<String, String>()) }
-
-    // 导入时就检查，不等到保存：选错文件（最常见的是选成 .pub 公钥）当场就能看到。
-    fun importKey(text: String?) {
-        val summary = text?.let(::keySummary)
-        if (text == null || summary == null) {
-            val reason = if (text == null) {
-                "读不到内容"
-            } else {
-                JSONObject(Bridge.inspectKey(text)).optString("message")
-            }
-            errors = errors + ("key" to reason)
-            return
-        }
-        key = text
-        keyLabel = summary
-        errors = errors - "key" - "keyPassphrase"
-    }
-
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            importKey(
-                runCatching {
-                    context.contentResolver.openInputStream(uri)?.use { stream ->
-                        val buffer = ByteArray(MAX_KEY_BYTES)
-                        var size = 0
-                        while (size < buffer.size) {
-                            val read = stream.read(buffer, size, buffer.size - size)
-                            if (read < 0) break
-                            size += read
-                        }
-                        String(buffer, 0, size, Charsets.UTF_8)
-                    }
-                }.getOrNull(),
-            )
-        }
-    }
 
     fun save() {
         val form = JSONObject()
@@ -144,12 +86,10 @@ fun HostEditScreen(
             .put("group", group)
             .put("note", note)
             .put("auth", if (useKey) "key" else "auto")
-            .put("key", key)
-            .put("keyPassphrase", passphrase)
-            .put("hasKey", savedKey != null)
+            .put("hasKey", keyName != null)
         val reply = JSONObject(Bridge.saveHost(form.toString(), original?.name))
         if (reply.optBoolean("ok")) {
-            onSaved(reply.getString("name"), HostCredentials(useKey, password, key, passphrase))
+            onSaved(reply.getString("name"), HostCredentials(useKey, password, keyName.takeIf { useKey }))
             return
         }
         val list = reply.optJSONArray("errors")
@@ -222,7 +162,8 @@ fun HostEditScreen(
             if (useKey) {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("私钥", color = Palette.Muted, fontSize = 13.sp)
-                    Column(
+                    val chosen = secrets.keys().firstOrNull { it.name == keyName }
+                    Row(
                         Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
@@ -232,37 +173,36 @@ fun HostEditScreen(
                                 if (errors["key"] != null) Palette.Error else Palette.Border,
                                 RoundedCornerShape(10.dp),
                             )
-                            .padding(start = 12.dp, end = 4.dp, top = 12.dp, bottom = 2.dp),
+                            .clickable { choosingKey = true }
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            keyLabel ?: "还没有导入",
-                            color = if (keyLabel != null) Palette.Text else Palette.Faint,
-                            fontSize = 15.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Row {
-                            Spacer(Modifier.weight(1f))
-                            TextButton(onClick = { importKey(clipboard.getText()?.text) }) { Text("从剪贴板粘贴") }
-                            TextButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("选择文件") }
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                chosen?.name ?: "选择或导入私钥",
+                                color = if (chosen != null) Palette.Text else Palette.Faint,
+                                fontSize = 15.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (chosen != null && chosen.summary.isNotEmpty()) {
+                                Text(
+                                    chosen.summary,
+                                    color = Palette.Faint,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
                         }
+                        Text(if (chosen != null) "更换" else "选择", color = Palette.Accent, fontSize = 14.sp)
                     }
                     Text(
-                        errors["key"] ?: "私钥用系统密钥库加密后保存在这台手机上，不会写成文件。",
+                        errors["key"] ?: "私钥保存在这台手机的私钥库里（系统密钥库加密），导入一次，多台主机都可以选它。",
                         color = if (errors["key"] != null) Palette.Error else Palette.Faint,
                         fontSize = 12.sp,
                     )
                 }
-                Field(
-                    "私钥口令", passphrase, { passphrase = it; errors = errors - "keyPassphrase" },
-                    placeholder = when {
-                        hasSavedPassphrase && key.isEmpty() -> "已保存，留空则保持不变"
-                        else -> "没有口令则留空"
-                    },
-                    error = errors["keyPassphrase"],
-                    keyboard = KeyboardType.Password,
-                    secret = true,
-                )
             } else {
                 Field(
                     "密码", password, { password = it },
@@ -302,6 +242,20 @@ fun HostEditScreen(
             errors[""]?.let { Text(it, color = Palette.Error, fontSize = 13.sp) }
             Spacer(Modifier.padding(bottom = 24.dp))
         }
+    }
+
+    if (choosingKey) {
+        KeyPickerDialog(
+            secrets = secrets,
+            selected = keyName,
+            onSelect = {
+                keyName = it
+                errors = errors - "key"
+                choosingKey = false
+            },
+            onDeleted = { keyName = null },
+            onDismiss = { choosingKey = false },
+        )
     }
 }
 

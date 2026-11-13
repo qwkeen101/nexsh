@@ -30,10 +30,10 @@ object Bridge {
     @JvmStatic external fun deleteHost(name: String): String
 
     /**
-     * 检查一段文字是不是私钥。返回 JSON：ok、encrypted，没有口令保护时还有 algorithm 和 fingerprint；
-     * 不是私钥时 ok 为 false，message 是原因。
+     * 检查一段文字是不是私钥；passphrase 没有就传 null。返回 JSON：ok、encrypted，能解开时还有
+     * algorithm 和 fingerprint；不能用时 ok 为 false，field 是 "key" 或 "passphrase"，message 是原因。
      */
-    @JvmStatic external fun inspectKey(text: String): String
+    @JvmStatic external fun inspectKey(text: String, passphrase: String?): String
 
     /** 密码、口令、私钥内容没有就传 null。它们留在会话的内存里，断线重连时接着用。 */
     @JvmStatic external fun open(

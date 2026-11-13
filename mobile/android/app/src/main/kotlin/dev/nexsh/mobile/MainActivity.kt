@@ -80,6 +80,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         val startError = Bridge.start(filesDir.absolutePath)
         val secrets = Secrets(applicationContext)
+        secrets.migrateHostKeys { keySummary(it) }
         setContent {
             NexshTheme { App(startError, secrets) }
         }
@@ -121,13 +122,14 @@ private fun App(startError: String, secrets: Secrets) {
                 hosts = hosts,
                 sessions = Sessions.open,
                 onConnect = { host ->
-                    val useKey = host.auth == "key"
+                    // 私钥登录的主机带上它在私钥库里选的那一把。
+                    val keyName = if (host.auth == "key") secrets.hostKey(host.name) else null
                     // 行列数先给个常见值，终端控件量出实际大小后会立刻改掉。
                     val id = Bridge.open(
                         host.name, 80, 24,
                         secrets.load(Secrets.password(host.name)),
-                        if (useKey) secrets.load(Secrets.passphrase(host.name)) else null,
-                        if (useKey) secrets.load(Secrets.key(host.name)) else null,
+                        keyName?.let(secrets::keyPassphrase),
+                        keyName?.let(secrets::keyContent),
                     )
                     if (id != 0L) {
                         val session = OpenSession(id, host.name)
@@ -151,26 +153,14 @@ private fun App(startError: String, secrets: Secrets) {
                 HostEditScreen(
                     original = original,
                     groups = hosts.map { it.group }.distinct(),
-                    hasSavedPassword = original != null && secrets.load(Secrets.password(original.name)) != null,
-                    savedKey = remember(original) {
-                        original?.let { secrets.load(Secrets.key(it.name)) }?.let(::keySummary)
-                    },
-                    hasSavedPassphrase = original != null && secrets.load(Secrets.passphrase(original.name)) != null,
+                    secrets = secrets,
                     onCancel = { screen = Screen.Hosts },
                     onSaved = { name, saved ->
                         if (original != null && original.name != name) secrets.renameHost(original.name, name)
-                        if (saved.useKey) {
-                            if (saved.key.isNotEmpty()) {
-                                secrets.store(Secrets.key(name), saved.key)
-                                // 换了一把私钥，之前那把的口令不再适用。
-                                secrets.delete(Secrets.passphrase(name))
-                            }
-                            if (saved.passphrase.isNotEmpty()) secrets.store(Secrets.passphrase(name), saved.passphrase)
-                        } else {
-                            // 改回密码登录：私钥不再用得到，不留在手机上。
-                            secrets.delete(Secrets.key(name))
-                            secrets.delete(Secrets.passphrase(name))
-                            if (saved.password.isNotEmpty()) secrets.store(Secrets.password(name), saved.password)
+                        // 改回密码登录时只是不再指向那把私钥；私钥本身留在库里，别的主机可能在用。
+                        secrets.setHostKey(name, saved.keyName)
+                        if (!saved.useKey && saved.password.isNotEmpty()) {
+                            secrets.store(Secrets.password(name), saved.password)
                         }
                         hosts = loadHosts()
                         screen = Screen.Hosts
