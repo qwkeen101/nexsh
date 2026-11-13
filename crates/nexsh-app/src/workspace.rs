@@ -634,17 +634,29 @@ impl Workspace {
                 .child(div().text_color(rgb(theme::TEXT_MUTED)).child(label))
                 .child(input.clone())
         };
-        let button = |label: &'static str, color: u32| {
-            div()
-                .px_3()
+        // 按钮不随对话框变窄而压缩或换行；主操作用实心底色，一眼能分出主次。
+        let button = |label: &'static str, primary: bool| {
+            let button = div()
+                .px_4()
                 .py_1()
+                .flex_shrink_0()
+                .whitespace_nowrap()
                 .rounded_sm()
                 .cursor_pointer()
                 .border_1()
-                .border_color(rgb(theme::BORDER))
-                .text_color(rgb(color))
-                .hover(|style| style.bg(rgb(theme::HOVER_BG)))
-                .child(label)
+                .child(label);
+            if primary {
+                button
+                    .bg(rgb(theme::ACCENT))
+                    .border_color(rgb(theme::ACCENT))
+                    .text_color(rgb(theme::WINDOW_BG))
+                    .hover(|style| style.opacity(0.9))
+            } else {
+                button
+                    .border_color(rgb(theme::BORDER))
+                    .text_color(rgb(theme::TEXT))
+                    .hover(|style| style.bg(rgb(theme::HOVER_BG)))
+            }
         };
 
         div()
@@ -652,6 +664,8 @@ impl Workspace {
             .top_0()
             .left_0()
             .size_full()
+            // 窗口很小时对话框贴着这圈留白，不会顶到窗口边缘。
+            .p_4()
             .flex()
             .items_center()
             .justify_center()
@@ -660,8 +674,13 @@ impl Workspace {
             .occlude()
             .child(
                 div()
-                    .w(px(400.))
-                    .p_4()
+                    .id("host-form")
+                    .w(px(440.))
+                    .max_w_full()
+                    // 窗口比对话框矮时，对话框内部滚动，按钮始终够得着。
+                    .max_h_full()
+                    .overflow_y_scroll()
+                    .p_5()
                     .flex()
                     .flex_col()
                     .gap_3()
@@ -669,7 +688,7 @@ impl Workspace {
                     .border_1()
                     .border_color(rgb(theme::BORDER))
                     .rounded_md()
-                    .child("添加主机")
+                    .child(div().text_size(px(15.)).child("添加主机"))
                     .child(field("地址", &form.target))
                     .child(field("名称", &form.name))
                     .child(field("分组", &form.group))
@@ -677,34 +696,32 @@ impl Workspace {
                     .children(form.error.clone().map(|message| {
                         div().text_color(rgb(theme::ERROR)).child(message)
                     }))
+                    // 说明文字单独一行，可以自由换行；按钮另起一行靠右，不和文字抢宽度。
                     .child(
                         div()
+                            .text_xs()
+                            .text_color(rgb(theme::TEXT_MUTED))
+                            .child("密码在连接时输入，不会保存。Tab 切换输入框，回车保存，Esc 取消。"),
+                    )
+                    .child(
+                        div()
+                            .pt_1()
                             .flex()
                             .items_center()
-                            .justify_between()
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(rgb(theme::TEXT_MUTED))
-                                    .child("Tab 切换，回车保存，Esc 取消。密码在连接时输入。"),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .gap_2()
-                                    .child(button("取消", theme::TEXT).on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                                            this.close_form(window, cx)
-                                        }),
-                                    ))
-                                    .child(button("保存", theme::ACCENT).on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                                            this.submit_form(window, cx)
-                                        }),
-                                    )),
-                            ),
+                            .justify_end()
+                            .gap_2()
+                            .child(button("取消", false).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                                    this.close_form(window, cx)
+                                }),
+                            ))
+                            .child(button("保存", true).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                                    this.submit_form(window, cx)
+                                }),
+                            )),
                     ),
             )
     }
