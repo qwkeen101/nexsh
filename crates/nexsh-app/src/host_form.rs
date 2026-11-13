@@ -217,6 +217,11 @@ impl HostForm {
         self.passphrase.update(cx, |input, cx| input.set_placeholder(passphrase, cx));
     }
 
+    /// 预先填好分组（从某个分组的菜单里新建主机时）。
+    pub fn set_group(&mut self, group: &str, cx: &mut Context<Self>) {
+        self.group.update(cx, |input, cx| input.set_text(group, cx));
+    }
+
     pub fn set_failure(&mut self, message: String, cx: &mut Context<Self>) {
         self.failure = Some(message);
         cx.notify();

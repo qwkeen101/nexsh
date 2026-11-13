@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 
 use crate::host::{AuthMethod, Host, default_user};
 
+/// 从 OpenSSH 配置读到的主机在侧栏里归到这个分组。名称里不能有 `/`，那是分组的层级分隔符。
+pub const GROUP: &str = "SSH 配置";
+
 /// 默认的配置文件位置。
 pub fn default_path() -> Option<PathBuf> {
     std::env::home_dir().map(|home| home.join(".ssh").join("config"))
@@ -94,7 +97,7 @@ fn flush(block: Option<Block>, hosts: &mut Vec<Host>) {
             port: block.port.unwrap_or(22),
             user: block.user.clone().unwrap_or_else(default_user),
             identity_file: block.identity_file.clone(),
-            group: Some("~/.ssh/config".to_string()),
+            group: Some(GROUP.to_string()),
             auth: AuthMethod::Auto,
             note: None,
         });

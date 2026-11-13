@@ -8,6 +8,7 @@ pub mod secrets;
 pub mod ssh;
 pub mod ssh_config;
 pub mod store;
+pub mod tree;
 
 pub use draft::{Field, FieldError, HostInput};
 pub use host::{AuthMethod, Host};

@@ -26,6 +26,8 @@ pub struct TextInput {
     marked: Option<Range<usize>>,
     placeholder: SharedString,
     masked: bool,
+    /// 不画边框和底色，由外层容器来画（例如带图标的搜索框）。
+    bare: bool,
     /// 内容没通过校验，边框标红。
     invalid: bool,
     /// 内容每改动一次加一。观察者用它区分"文字变了"和"只是重绘"。
@@ -45,6 +47,7 @@ impl TextInput {
             marked: None,
             placeholder: placeholder.into(),
             masked: false,
+            bare: false,
             invalid: false,
             revision: 0,
             pasted: false,
@@ -55,6 +58,12 @@ impl TextInput {
     /// 密码模式：内容显示为圆点。
     pub fn masked(mut self) -> Self {
         self.masked = true;
+        self
+    }
+
+    /// 不画边框和底色，嵌在别的容器里用。
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
         self
     }
 
@@ -340,16 +349,18 @@ impl Render for TextInput {
             theme::BORDER
         };
 
-        div()
-            .h(px(30.))
-            .w_full()
-            .px_2()
-            .flex()
-            .items_center()
-            .bg(rgb(theme::INPUT_BG))
-            .border_1()
-            .border_color(rgb(border))
-            .rounded_sm()
+        let frame = div().h(px(30.)).w_full().flex().items_center();
+        let frame = if self.bare {
+            frame
+        } else {
+            frame
+                .px_2()
+                .bg(rgb(theme::INPUT_BG))
+                .border_1()
+                .border_color(rgb(border))
+                .rounded_sm()
+        };
+        frame
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))

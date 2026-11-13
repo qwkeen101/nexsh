@@ -1,27 +1,39 @@
 //! 主窗口：左侧主机列表，右侧标签页和终端。
 
-use std::collections::{HashMap, HashSet};
+mod sidebar;
+
+use std::collections::HashSet;
 
 use gpui::{
-    Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent,
-    Subscription, Window, div, prelude::*, px, rgb,
+    ClipboardItem, Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton,
+    MouseDownEvent, Pixels, Point, Subscription, Window, div, prelude::*, px, rgb,
 };
 use nexsh_core::secrets::{self, SecretKind};
+use nexsh_core::tree::{self, Row};
 use nexsh_core::{Host, HostStore, LatencyLevel, search, ssh_config};
 
+use crate::icons::{Icon, icon};
 use crate::host_form::{HostDraft, HostForm, HostFormEvent, SecretChange};
 use crate::terminal_view::{SessionState, TerminalView};
 use crate::text_input::TextInput;
 use crate::theme;
 
-/// 侧栏里的一个分组，`hosts` 是 `Workspace::hosts` 的下标。
-struct Section {
-    title: String,
-    hosts: Vec<usize>,
+/// 右键菜单是针对谁的。
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MenuTarget {
+    /// `Workspace::hosts` 的下标。
+    Host(usize),
+    /// 分组的完整路径。
+    Group(String),
 }
 
-/// 没有填分组的已保存主机归在这里。
-const UNGROUPED: &str = "未分组";
+/// 侧栏的右键菜单。
+struct Menu {
+    position: Point<Pixels>,
+    target: MenuTarget,
+    /// 已经点过一次"删除"，再点一次才真的删。
+    confirming_delete: bool,
+}
 
 pub struct Workspace {
     focus_handle: FocusHandle,
@@ -36,8 +48,12 @@ pub struct Workspace {
     error: Option<String>,
     /// 侧栏顶部的搜索框，也用来输入地址直接连接。
     search: Entity<TextInput>,
-    /// 被折叠的分组（按标题）。搜索时不生效：有匹配的分组总是展开。
+    /// 被折叠的分组（按完整路径）。搜索时不生效：有匹配的分组总是展开。
     collapsed: HashSet<String>,
+    /// 在搜索框里用上下键选中的是当前可见主机里的第几台。
+    selected: usize,
+    menu: Option<Menu>,
+    sidebar_visible: bool,
     form: Option<Entity<HostForm>>,
     /// 对话框关闭时一并丢弃，不再接收它的事件。
     form_subscription: Option<Subscription>,
@@ -53,13 +69,25 @@ impl Workspace {
         };
         let config_hosts =
             ssh_config::default_path().map(|path| ssh_config::load(&path)).unwrap_or_default();
-        let search = cx.new(|cx| TextInput::new("搜索，或输入 user@host 连接", cx));
-        // 搜索框内容变化时重新筛选列表。
-        cx.observe(&search, |_, _, cx| cx.notify()).detach();
+        let search = cx.new(|cx| TextInput::new("搜索，或输入 user@host 连接", cx).bare());
+        // 搜索框内容变化时重新筛选列表，选中项回到第一台。
+        let mut seen = 0;
+        cx.observe(&search, move |this: &mut Self, search, cx| {
+            let revision = search.read(cx).revision();
+            if revision != seen {
+                seen = revision;
+                this.selected = 0;
+            }
+            cx.notify();
+        })
+        .detach();
         let mut workspace = Self {
             focus_handle: cx.focus_handle(),
             search,
             collapsed: HashSet::new(),
+            selected: 0,
+            menu: None,
+            sidebar_visible: true,
             store,
             config_hosts,
             hosts: Vec::new(),
@@ -87,20 +115,19 @@ impl Workspace {
         self.hosts = hosts;
     }
 
-    /// 当前查询下要显示的分组，保持主机原有的先后顺序。
-    fn sections(&self, query: &str) -> Vec<Section> {
-        let mut sections: Vec<Section> = Vec::new();
-        for (index, host) in self.hosts.iter().enumerate() {
-            if !search::matches(host, query) {
-                continue;
-            }
-            let title = host.group.as_deref().unwrap_or(UNGROUPED);
-            match sections.iter_mut().find(|section| section.title == title) {
-                Some(section) => section.hosts.push(index),
-                None => sections.push(Section { title: title.to_string(), hosts: vec![index] }),
-            }
-        }
-        sections
+    fn query(&self, cx: &Context<Self>) -> String {
+        self.search.read(cx).text().trim().to_string()
+    }
+
+    /// 当前查询下侧栏里看得见的主机，按显示顺序。
+    fn visible_hosts(&self, query: &str) -> Vec<usize> {
+        tree::rows(&self.hosts, query, &self.collapsed)
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Host { index, .. } => Some(index),
+                Row::Group { .. } => None,
+            })
+            .collect()
     }
 
     /// 查询能解析成一个地址、且列表里没有这个地址时，可以直接连接它。
@@ -110,16 +137,12 @@ impl Workspace {
         (!self.hosts.iter().any(|host| host.address() == address)).then_some(target)
     }
 
-    /// 在搜索框里按回车：优先打开第一台匹配的主机，没有匹配就把输入当作地址连接。
+    /// 在搜索框里按回车：打开选中的主机；一台都没匹配上就把输入当作地址连接。
     fn submit_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let query = self.search.read(cx).text().trim().to_string();
-        if query.is_empty() {
-            return;
-        }
-        let first_match =
-            self.sections(&query).first().and_then(|section| section.hosts.first().copied());
-        let host = match first_match {
-            Some(index) => self.hosts.get(index).cloned(),
+        let query = self.query(cx);
+        let visible = self.visible_hosts(&query);
+        let host = match visible.get(self.selected.min(visible.len().saturating_sub(1))) {
+            Some(&index) => self.hosts.get(index).cloned(),
             None => self.quick_target(&query),
         };
         if let Some(host) = host {
@@ -128,10 +151,43 @@ impl Workspace {
         }
     }
 
-    fn toggle_section(&mut self, title: &str, cx: &mut Context<Self>) {
-        if !self.collapsed.remove(title) {
-            self.collapsed.insert(title.to_string());
+    /// 上下键在可见的主机之间移动选中项，到头后回绕。
+    fn move_selection(&mut self, backwards: bool, cx: &mut Context<Self>) {
+        let count = self.visible_hosts(&self.query(cx)).len();
+        if count == 0 {
+            return;
         }
+        let current = self.selected.min(count - 1);
+        self.selected = if backwards { (current + count - 1) % count } else { (current + 1) % count };
+        cx.notify();
+    }
+
+    fn toggle_group(&mut self, path: &str, cx: &mut Context<Self>) {
+        if !self.collapsed.remove(path) {
+            self.collapsed.insert(path.to_string());
+        }
+        cx.notify();
+    }
+
+    fn open_menu(&mut self, target: MenuTarget, position: Point<Pixels>, cx: &mut Context<Self>) {
+        self.menu = Some(Menu { position, target, confirming_delete: false });
+        cx.notify();
+    }
+
+    fn close_menu(&mut self, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    fn copy_address(&mut self, index: usize, cx: &mut Context<Self>) {
+        if let Some(host) = self.hosts.get(index) {
+            cx.write_to_clipboard(ClipboardItem::new_string(host.address()));
+        }
+    }
+
+    fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_visible = !self.sidebar_visible;
         cx.notify();
     }
 
@@ -163,7 +219,14 @@ impl Workspace {
     }
 
     /// 打开主机对话框；`original` 为 None 时是新建。
-    fn open_form(&mut self, original: Option<Host>, window: &mut Window, cx: &mut Context<Self>) {
+    /// `group` 是新建时预先填好的分组。
+    fn open_form(
+        &mut self,
+        original: Option<Host>,
+        group: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(store) = self.store.as_ref() else { return };
         let editing = original.as_ref().map(|host| host.name.as_str());
         // 名称在整个列表里唯一，~/.ssh/config 里的也算。
@@ -173,14 +236,15 @@ impl Workspace {
             .map(|host| host.name.clone())
             .filter(|name| Some(name.as_str()) != editing)
             .collect();
-        let mut groups: Vec<String> = Vec::new();
-        for group in store.hosts().iter().filter_map(|host| host.group.as_ref()) {
-            if !groups.contains(group) {
-                groups.push(group.clone());
-            }
-        }
+        let groups = tree::group_paths(store.hosts());
 
-        let form = cx.new(|cx| HostForm::new(original, taken_names, groups, window, cx));
+        let form = cx.new(|cx| {
+            let mut form = HostForm::new(original, taken_names, groups, window, cx);
+            if let Some(group) = &group {
+                form.set_group(group, cx);
+            }
+            form
+        });
         let subscription = cx.subscribe_in(
             &form,
             window,
@@ -245,13 +309,21 @@ impl Workspace {
         store.save().map_err(|error| error.to_string())
     }
 
-    /// 搜索框里的回车和 Esc。对话框自己处理按键，其余按键归终端。
+    /// 菜单的 Esc，以及搜索框里的回车、上下键和 Esc。对话框自己处理按键，其余按键归终端。
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let key = event.keystroke.key.as_str();
+        if self.menu.is_some() && key == "escape" {
+            self.close_menu(cx);
+            cx.stop_propagation();
+            return;
+        }
         if !self.search.read(cx).focus_handle(cx).is_focused(window) {
             return;
         }
-        match event.keystroke.key.as_str() {
+        match key {
             "enter" => self.submit_search(window, cx),
+            "down" => self.move_selection(false, cx),
+            "up" => self.move_selection(true, cx),
             "escape" => {
                 self.search.update(cx, |input, cx| input.clear(cx));
                 self.focus_active(window, cx);
@@ -292,219 +364,6 @@ impl Workspace {
         }
     }
 
-    fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.search.read(cx).text().trim().to_string();
-        let searching = !query.is_empty();
-        let sections = self.sections(&query);
-        let quick_target = self.quick_target(&query);
-
-        // 每台主机最"值得注意"的会话状态，以及当前标签页对应的主机。
-        let mut states: HashMap<&str, SessionState> = HashMap::new();
-        for tab in &self.tabs {
-            let view = tab.read(cx);
-            let state = view.state();
-            states
-                .entry(view.host().name.as_str())
-                .and_modify(|known| {
-                    if state_rank(state) > state_rank(*known) {
-                        *known = state;
-                    }
-                })
-                .or_insert(state);
-        }
-        let active_host = self.tabs.get(self.active).map(|tab| tab.read(cx).host().name.as_str());
-
-        let mut rows = Vec::new();
-        if let Some(target) = quick_target {
-            let label = format!("连接 {}", target.address());
-            rows.push(
-                div()
-                    .mx_2()
-                    .mb_1()
-                    .px_2()
-                    .py_1()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .text_color(rgb(theme::ACCENT))
-                    .hover(|style| style.bg(rgb(theme::HOVER_BG)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                            this.search.update(cx, |input, cx| input.clear(cx));
-                            this.open_host(target.clone(), window, cx);
-                        }),
-                    )
-                    .child(div().min_w_0().truncate().child(label))
-                    // 有匹配的主机时回车打开的是第一台主机，这一行要用鼠标点。
-                    .when(sections.is_empty(), |row| {
-                        row.child(div().text_xs().text_color(rgb(theme::TEXT_MUTED)).child("回车"))
-                    }),
-            );
-        }
-
-        for section in &sections {
-            let collapsed = !searching && self.collapsed.contains(&section.title);
-            let title = section.title.clone();
-            rows.push(
-                div()
-                    .px_3()
-                    .py_1()
-                    .flex()
-                    .items_center()
-                    .gap_1()
-                    .cursor_pointer()
-                    .text_xs()
-                    .text_color(rgb(theme::TEXT_MUTED))
-                    .hover(|style| style.text_color(rgb(theme::TEXT)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
-                            this.toggle_section(&title, cx)
-                        }),
-                    )
-                    .child(div().w(px(10.)).child(if collapsed { "▸" } else { "▾" }))
-                    .child(div().flex_1().min_w_0().truncate().child(section.title.clone()))
-                    .child(section.hosts.len().to_string()),
-            );
-            if collapsed {
-                continue;
-            }
-            for &index in &section.hosts {
-                let host = &self.hosts[index];
-                let deletable = index < self.saved_count;
-                let selected = active_host == Some(host.name.as_str());
-                let dot_color = states.get(host.name.as_str()).map(|state| state_color(*state));
-                let target = host.clone();
-                rows.push(
-                    div()
-                        .group("host-row")
-                        .mx_2()
-                        .pl_4()
-                        .pr_1()
-                        .py_1()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .rounded_sm()
-                        .cursor_pointer()
-                        .when(selected, |row| row.bg(rgb(theme::HOVER_BG)))
-                        .hover(|style| style.bg(rgb(theme::HOVER_BG)))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                                this.open_host(target.clone(), window, cx)
-                            }),
-                        )
-                        // 没有打开会话的主机也留出圆点的位置，名称才能对齐。
-                        .child(dot(dot_color))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(div().truncate().child(host.name.clone()))
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .text_xs()
-                                        .text_color(rgb(theme::TEXT_MUTED))
-                                        .child(host.address()),
-                                ),
-                        )
-                        // 编辑和删除只在鼠标移到这一行时出现，平时不抢视线。
-                        .when(deletable, |row| {
-                            let action = |label: &'static str, danger: bool| {
-                                div()
-                                    .px_1()
-                                    .rounded_sm()
-                                    .text_xs()
-                                    .text_color(rgb(theme::TEXT_MUTED))
-                                    .opacity(0.)
-                                    .group_hover("host-row", |style| style.opacity(1.))
-                                    .hover(move |style| {
-                                        let color = if danger { theme::ERROR } else { theme::TEXT };
-                                        style.bg(rgb(theme::BORDER)).text_color(rgb(color))
-                                    })
-                                    .child(label)
-                            };
-                            let editable = host.clone();
-                            row.child(action("编辑", false).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                                    // 不让点击冒泡到整行，否则会同时去连接。
-                                    cx.stop_propagation();
-                                    this.open_form(Some(editable.clone()), window, cx);
-                                }),
-                            ))
-                            .child(action("删除", true).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
-                                    cx.stop_propagation();
-                                    this.delete_host(index, cx);
-                                }),
-                            ))
-                        }),
-                );
-            }
-        }
-
-        let hint = if !rows.is_empty() || self.error.is_some() {
-            None
-        } else if searching {
-            Some("没有匹配的主机")
-        } else {
-            Some("还没有主机。点上方的「+ 添加」，或在 ~/.ssh/config 里配置。")
-        };
-        let hint = hint
-            .map(|text| div().px_3().py_2().text_color(rgb(theme::TEXT_MUTED)).child(text));
-        let error = self.error.clone().map(|message| {
-            div().px_3().py_2().text_color(rgb(theme::ERROR)).child(message)
-        });
-        let add_button = self.store.is_some().then(|| {
-            div()
-                .px_2()
-                .rounded_sm()
-                .cursor_pointer()
-                .text_color(rgb(theme::ACCENT))
-                .hover(|style| style.bg(rgb(theme::HOVER_BG)))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                        this.open_form(None, window, cx)
-                    }),
-                )
-                .child("+ 添加")
-        });
-
-        div()
-            .w(px(240.))
-            .h_full()
-            .flex()
-            .flex_col()
-            .flex_shrink_0()
-            .bg(rgb(theme::SIDEBAR_BG))
-            .border_r_1()
-            .border_color(rgb(theme::BORDER))
-            .child(
-                div()
-                    .px_3()
-                    .py_2()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child(div().text_color(rgb(theme::TEXT_MUTED)).child("主机"))
-                    .children(add_button),
-            )
-            .child(div().px_2().pb_2().child(self.search.clone()))
-            .children(error)
-            .children(hint)
-            .child(div().id("host-list").flex_1().overflow_y_scroll().pb_2().children(rows))
-    }
-
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.tabs.iter().enumerate().map(|(index, view)| {
             let active = index == self.active;
@@ -532,7 +391,7 @@ impl Workspace {
                 .child(title)
                 .child(
                     div()
-                        .px_1()
+                        .p_0p5()
                         .rounded_sm()
                         .hover(|style| style.bg(rgb(theme::HOVER_BG)))
                         .on_mouse_down(
@@ -543,9 +402,26 @@ impl Workspace {
                                 this.close_tab(index, window, cx);
                             }),
                         )
-                        .child("×"),
+                        .child(icon(Icon::Close, 12., text_color)),
                 )
         });
+
+        let sidebar_toggle = div()
+            .w(px(34.))
+            .h_full()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .border_r_1()
+            .border_color(rgb(theme::BORDER))
+            .hover(|style| style.bg(rgb(theme::HOVER_BG)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseDownEvent, _window, cx| this.toggle_sidebar(cx)),
+            )
+            .child(icon(Icon::Sidebar, 15., theme::TEXT_MUTED));
 
         div()
             .h(px(34.))
@@ -555,6 +431,7 @@ impl Workspace {
             .bg(rgb(theme::SIDEBAR_BG))
             .border_b_1()
             .border_color(rgb(theme::BORDER))
+            .child(sidebar_toggle)
             .children(tabs)
     }
 
@@ -646,7 +523,7 @@ impl Focusable for Workspace {
 }
 
 impl Render for Workspace {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let content = match self.tabs.get(self.active) {
             Some(view) => div().flex_1().min_h_0().w_full().child(view.clone()),
             None => div()
@@ -669,7 +546,7 @@ impl Render for Workspace {
             .text_size(px(13.))
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
-            .child(self.render_sidebar(cx))
+            .when(self.sidebar_visible, |root| root.child(self.render_sidebar(window, cx)))
             .child(
                 div()
                     .flex_1()
@@ -682,5 +559,6 @@ impl Render for Workspace {
                     .child(self.render_status_bar(cx)),
             )
             .children(self.form.clone())
+            .children(self.render_menu(window, cx))
     }
 }

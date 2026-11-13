@@ -4,6 +4,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod host_form;
+mod icons;
 mod terminal_view;
 mod text_input;
 mod theme;
@@ -16,7 +17,7 @@ use gpui::{
 use workspace::Workspace;
 
 fn main() {
-    Application::new().run(|cx: &mut App| {
+    Application::new().with_assets(icons::Assets).run(|cx: &mut App| {
         cx.on_window_closed(|cx| {
             if cx.windows().is_empty() {
                 cx.quit();
