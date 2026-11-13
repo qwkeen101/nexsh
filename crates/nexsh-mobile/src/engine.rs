@@ -18,7 +18,7 @@ use nexsh_core::{
     AuthMethod, ConnectOptions, Host, LatencyMeter, SessionCommand, SessionEvent, SshError,
     spawn_session,
 };
-use nexsh_term::{KeyMods, TermEvent, Terminal, bracketed_paste, encode_key};
+use nexsh_term::{KeyMods, SelectionEnd, TermEvent, Terminal, bracketed_paste, encode_key};
 use tokio::sync::mpsc;
 
 use crate::wire::{self, Snapshot, State};
@@ -339,9 +339,10 @@ impl Session {
         self.touch();
     }
 
-    /// 原样写给远端的字节。打字时画面回到最新一行。
+    /// 原样写给远端的字节。打字时画面回到最新一行，选区取消。
     pub fn input(&self, bytes: Vec<u8>) {
         let mut inner = self.lock();
+        inner.terminal.clear_selection();
         inner.terminal.scroll_to_bottom();
         inner.send(SessionCommand::Input(bytes));
         drop(inner);
@@ -389,6 +390,34 @@ impl Session {
     pub fn scroll(&self, lines: i32) {
         self.lock().terminal.scroll(lines);
         self.touch();
+    }
+
+    /// 改动选区，然后让界面重画。
+    fn select(&self, change: impl FnOnce(&mut Terminal)) {
+        change(&mut self.lock().terminal);
+        self.touch();
+    }
+
+    /// 选中可见区域里这个位置上的词。
+    pub fn select_word(&self, row: usize, col: usize) {
+        self.select(|terminal| terminal.select_word(row, col));
+    }
+
+    /// 把选区的一端拖到这个位置。
+    pub fn move_selection(&self, end: SelectionEnd, row: usize, col: usize) {
+        self.select(|terminal| terminal.move_selection(end, row, col));
+    }
+
+    pub fn select_all(&self) {
+        self.select(Terminal::select_all);
+    }
+
+    pub fn clear_selection(&self) {
+        self.select(Terminal::clear_selection);
+    }
+
+    pub fn selection_text(&self) -> Option<String> {
+        self.lock().terminal.selection_text()
     }
 
     /// 画面自 `since` 那一代以来没变时返回 None。
@@ -520,6 +549,20 @@ mod tests {
         let next = session.snapshot(generation).expect("有输出后画面变了");
         assert_eq!(next[1], State::Connected as u8);
         assert!(next.len() > first.len());
+    }
+
+    #[test]
+    fn selecting_redraws_and_typing_clears_it() {
+        let session = session();
+        feed(&session, SessionEvent::Output(b"hello world".to_vec()));
+        let generation = session.generation.load(Ordering::Acquire);
+        session.select_word(0, 7);
+        assert_eq!(session.selection_text().as_deref(), Some("world"));
+        let frame = session.snapshot(generation).expect("选区变了要重画");
+        assert_eq!(frame[2] & 8, 8);
+
+        session.input(b"x".to_vec());
+        assert_eq!(session.selection_text(), None);
     }
 
     #[test]

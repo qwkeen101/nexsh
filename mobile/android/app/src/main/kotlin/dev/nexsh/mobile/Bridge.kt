@@ -14,6 +14,9 @@ object Bridge {
     const val ALT = 2
     const val SHIFT = 4
 
+    const val SELECTION_START = 0
+    const val SELECTION_END = 1
+
     /** 应用启动时调用一次。返回空字符串表示成功，否则是错误信息。 */
     @JvmStatic external fun start(dir: String): String
 
@@ -68,6 +71,20 @@ object Bridge {
 
     /** 正数向上翻看历史。 */
     @JvmStatic external fun scroll(id: Long, lines: Int)
+
+    /** 选中可见区域里这个位置上的词。 */
+    @JvmStatic external fun selectWord(id: Long, row: Int, col: Int)
+
+    /** 把选区的一端拖到这个位置；end 是 SELECTION_START 或 SELECTION_END。 */
+    @JvmStatic external fun moveSelection(id: Long, end: Int, row: Int, col: Int)
+
+    /** 选中全部内容，包括滚出屏幕的历史。 */
+    @JvmStatic external fun selectAll(id: Long)
+
+    @JvmStatic external fun clearSelection(id: Long)
+
+    /** 选中的文字；没有选区时为 null。 */
+    @JvmStatic external fun selectionText(id: Long): String?
 
     @JvmStatic external fun close(id: Long)
 }

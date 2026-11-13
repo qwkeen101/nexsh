@@ -43,9 +43,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -77,6 +79,7 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
     val state = remember { mutableIntStateOf(Frame.CONNECTING) }
     val latency = remember { mutableIntStateOf(-1) }
     var message by remember { mutableStateOf("") }
+    var selecting by remember { mutableStateOf(false) }
     val ctrl = remember { mutableIntStateOf(OFF) }
     val alt = remember { mutableIntStateOf(OFF) }
     val ctrlTap = remember { mutableLongStateOf(0L) }
@@ -91,6 +94,7 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
                 if (ctrl.intValue == ONCE) ctrl.intValue = OFF
                 if (alt.intValue == ONCE) alt.intValue = OFF
             }
+            onSelection = { selecting = it }
             onFrame = { frame ->
                 state.intValue = frame.state
                 latency.intValue = frame.latencyMs
@@ -166,14 +170,34 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
             }
         }
 
-        AndroidView(
-            factory = { view },
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 4.dp)
-                .clipToBounds(),
-        )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            AndroidView(
+                factory = { view },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 6.dp, vertical = 4.dp)
+                    .clipToBounds(),
+            )
+            // 有选区时浮在终端顶部的操作条。长按文字开始选择，拖两端的圆点调整范围。
+            if (selecting) {
+                Row(
+                    Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 8.dp)
+                        .shadow(8.dp, RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Palette.Surface)
+                        .padding(horizontal = 4.dp),
+                ) {
+                    TextButton(onClick = {
+                        view.selectionText()?.let { clipboard.setText(AnnotatedString(it)) }
+                        view.clearSelection()
+                    }) { Text("复制") }
+                    TextButton(onClick = { view.selectAll() }) { Text("全选") }
+                    TextButton(onClick = { view.clearSelection() }) { Text("取消", color = Palette.Muted) }
+                }
+            }
+        }
 
         Row(
             Modifier

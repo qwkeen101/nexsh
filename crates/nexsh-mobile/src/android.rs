@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use jni::JNIEnv;
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring};
-use nexsh_term::KeyMods;
+use nexsh_term::{KeyMods, SelectionEnd};
 
 use crate::engine::{Credentials, Engine, Session};
 use crate::hosts::{HostBook, describe_key};
@@ -270,6 +270,71 @@ pub extern "system" fn Java_dev_nexsh_mobile_Bridge_scroll<'local>(
 ) {
     if let Some(session) = session(id) {
         session.scroll(lines);
+    }
+}
+
+/// 选中可见区域里这个位置上的词。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_selectWord<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+    row: jint,
+    col: jint,
+) {
+    if let Some(session) = session(id) {
+        session.select_word(row.max(0) as usize, col.max(0) as usize);
+    }
+}
+
+/// 把选区的一端拖到这个位置；end 为 0 是起点，其余是终点。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_moveSelection<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+    end: jint,
+    row: jint,
+    col: jint,
+) {
+    let end = if end == 0 { SelectionEnd::Start } else { SelectionEnd::End };
+    if let Some(session) = session(id) {
+        session.move_selection(end, row.max(0) as usize, col.max(0) as usize);
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_selectAll<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+) {
+    if let Some(session) = session(id) {
+        session.select_all();
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_clearSelection<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+) {
+    if let Some(session) = session(id) {
+        session.clear_selection();
+    }
+}
+
+/// 选中的文字；没有选区时返回 null。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_selectionText<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+) -> jstring {
+    match session(id).and_then(|session| session.selection_text()) {
+        Some(text) => java_string(&mut env, &text),
+        None => std::ptr::null_mut(),
     }
 }
 

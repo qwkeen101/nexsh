@@ -7,6 +7,8 @@ mkdir -p shots
 shot() { adb exec-out screencap -p > "shots/$1.png"; }
 
 adb install -r "$apk"
+# 通知权限先给上，免得第一次连接时弹出的系统对话框挡住后面的点击。
+adb shell pm grant dev.nexsh.mobile android.permission.POST_NOTIFICATIONS
 adb logcat -c
 adb shell am start -W -n dev.nexsh.mobile/.MainActivity
 sleep 6
@@ -102,6 +104,33 @@ shot m09-reconnecting
 sudo systemctl start ssh.service || sudo systemctl start ssh.socket
 sleep 25
 shot m10-reconnected
+
+# ---- 选择复制 ----
+# 长按最后一行输出里的一个词，应当出现选区、两端的手柄和顶部的操作条。
+adb shell input swipe 250 1285 250 1285 900
+sleep 2
+shot m11-selection
+# 从选中的词往右下拖出一段（按住 0.9 秒触发长按，再拖）。
+adb shell input draganddrop 250 1125 700 1285 1500 || adb shell input swipe 250 1125 700 1285 1500
+sleep 2
+shot m12-selection-dragged
+# 操作条上的"复制"。
+adb shell input tap 361 350
+sleep 2
+shot m13-copied
+
+# ---- 后台保持连接 ----
+# 回到桌面待一会儿：前台服务应当在跑，通知栏里有一条通知；回来时会话还连着。
+adb shell input keyevent KEYCODE_HOME
+sleep 45
+adb shell dumpsys activity services dev.nexsh.mobile | grep -iE "ServiceRecord|isForeground|foregroundId|types=" > shots/service.txt
+adb shell cmd statusbar expand-notifications
+sleep 2
+shot m14-notification
+adb shell cmd statusbar collapse
+adb shell am start -n dev.nexsh.mobile/.MainActivity
+sleep 4
+shot m15-after-background
 
 adb shell pidof dev.nexsh.mobile || echo "应用已经不在运行"
 adb logcat -d -t 400 "*:W" > shots/logcat.txt

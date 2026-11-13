@@ -17,6 +17,29 @@ android {
         versionName = System.getenv("NEXSH_VERSION") ?: "dev"
     }
 
+    // 发布包用固定的签名密钥，这样新版本可以直接覆盖安装。密钥库不在仓库里：
+    // CI 从仓库的 Secret 里取出来放到 NEXSH_KEYSTORE 指的位置。没有它时（本地构建、
+    // 没配 Secret 的仓库）退回调试签名，包照样能装，只是不能覆盖别的机器打出来的包。
+    val keystore = System.getenv("NEXSH_KEYSTORE").orEmpty()
+    signingConfigs {
+        if (keystore.isNotEmpty()) {
+            create("fixed") {
+                storeFile = file(keystore)
+                storeType = "pkcs12"
+                storePassword = System.getenv("NEXSH_KEYSTORE_PASSWORD")
+                keyAlias = "nexsh"
+                keyPassword = System.getenv("NEXSH_KEYSTORE_PASSWORD")
+            }
+        }
+    }
+    buildTypes {
+        release {
+            // 代码量很小，不做混淆和裁剪：JNI 按名字找 Kotlin 一侧的函数，裁剪只会添乱。
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("fixed") ?: signingConfigs.getByName("debug")
+        }
+    }
+
     buildFeatures {
         compose = true
     }

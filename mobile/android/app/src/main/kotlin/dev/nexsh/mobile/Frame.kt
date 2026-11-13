@@ -21,13 +21,18 @@ class Frame(private val bytes: ByteArray) {
 
     /** 没有测到时为 -1。 */
     val latencyMs: Int = buffer.getInt(28)
+    /** 选区两端在可见区域里的位置；没有选区或那一端滚出去了是 -1。 */
+    val selectionStartRow: Int = buffer.getShort(32).toInt()
+    val selectionStartCol: Int = buffer.getShort(34).toInt()
+    val selectionEndRow: Int = buffer.getShort(36).toInt()
+    val selectionEndCol: Int = buffer.getShort(38).toInt()
     val title: String
     val message: String
     val cellCount: Int
     private val cellsAt: Int
 
     init {
-        var at = 32
+        var at = 40
         val titleLength = u16(at)
         title = String(bytes, at + 2, titleLength, Charsets.UTF_8)
         at += 2 + titleLength
@@ -39,6 +44,7 @@ class Frame(private val bytes: ByteArray) {
     }
 
     val bracketedPaste: Boolean get() = modes and 2 != 0
+    val hasSelection: Boolean get() = modes and 8 != 0
 
     private fun u16(at: Int): Int = buffer.getShort(at).toInt() and 0xffff
 
@@ -66,5 +72,6 @@ class Frame(private val bytes: ByteArray) {
         const val UNDERLINE = 4
         const val STRIKEOUT = 8
         const val WIDE = 16
+        const val SELECTED = 32
     }
 }

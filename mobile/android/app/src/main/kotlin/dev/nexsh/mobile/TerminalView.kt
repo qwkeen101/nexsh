@@ -8,15 +8,18 @@ import android.text.InputType
 import android.util.TypedValue
 import android.view.Choreographer
 import android.view.GestureDetector
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import kotlin.math.ceil
+import kotlin.math.hypot
 import kotlin.math.max
 
 /**
@@ -41,6 +44,30 @@ class TerminalView(context: Context) : View(context) {
     /** 状态、标题、延迟这些画面之外的信息变化时通知界面。 */
     var onFrame: (Frame) -> Unit = {}
 
+    /** 选区出现或消失时通知界面，界面据此显示"复制"等操作。 */
+    var onSelection: (Boolean) -> Unit = {}
+
+    private var selecting = false
+
+    /** 正在拖动选区的哪一端；NO_END 表示没有在拖。 */
+    private var draggedEnd = NO_END
+    private var dragX = 0f
+    private var dragY = 0f
+    private var dragFrames = 0
+
+    /** 手指位置到它所指的单元格中心的偏移：手柄挂在文字下方，手指按着手柄时指的是上面那一格。 */
+    private var grabX = 0f
+    private var grabY = 0f
+
+    /** 长按之后手指要移出这个距离才开始拖：按着不动时的轻微抖动不该改掉刚选中的词。 */
+    private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private var dragArmed = false
+
+    /** 触发了长按的那次触摸的按下时间，用来认出它后续的事件。 */
+    private var longPressDownTime = 0L
+    private val handleRadius = 9f * resources.displayMetrics.density
+    private val handleReach = 28f * resources.displayMetrics.density
+
     private var frame: Frame? = null
     private var generation = 0L
     private var cellWidth = 1f
@@ -54,6 +81,7 @@ class TerminalView(context: Context) : View(context) {
 
     private val ticker = object : Choreographer.FrameCallback {
         override fun doFrame(frameTimeNanos: Long) {
+            autoScrollSelection()
             poll()
             Choreographer.getInstance().postFrameCallback(this)
         }
@@ -62,9 +90,24 @@ class TerminalView(context: Context) : View(context) {
     private val gestures = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(event: MotionEvent) = true
 
+        // 有选区时点一下是取消选区，否则是唤出键盘。
         override fun onSingleTapUp(event: MotionEvent): Boolean {
-            showKeyboard()
+            if (selecting) Bridge.clearSelection(sessionId) else showKeyboard()
             return true
+        }
+
+        // 长按选中手指下的词；不抬手接着拖，就是从这个词往后选。
+        override fun onLongPress(event: MotionEvent) {
+            if (sessionId == 0L) return
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            Bridge.selectWord(sessionId, rowAt(event.y), colAt(event.x))
+            draggedEnd = Bridge.SELECTION_END
+            longPressDownTime = event.downTime
+            dragX = event.x
+            dragY = event.y
+            grabX = 0f
+            grabY = 0f
+            dragArmed = false
         }
 
         // 手指往下拖是翻看更早的输出。不足一行的位移先攒着。
@@ -120,6 +163,11 @@ class TerminalView(context: Context) : View(context) {
         val next = Frame(bytes)
         generation = next.generation
         frame = next
+        if (next.hasSelection != selecting) {
+            selecting = next.hasSelection
+            if (!selecting) draggedEnd = NO_END
+            onSelection(selecting)
+        }
         onFrame(next)
         invalidate()
     }
@@ -150,9 +198,9 @@ class TerminalView(context: Context) : View(context) {
         }
         canvas.drawColor(frame.background)
 
-        // 背景：只画和默认背景不同的单元格。
+        // 背景：只画和默认背景不同的单元格。选中的单元格换成选区的底色。
         for (index in 0 until frame.cellCount) {
-            val color = frame.bg(index)
+            val color = if (frame.attrs(index) and Frame.SELECTED != 0) SELECTION_COLOR else frame.bg(index)
             if (color == frame.background) continue
             val left = frame.col(index) * cellWidth
             val top = frame.row(index) * cellHeight
@@ -178,7 +226,8 @@ class TerminalView(context: Context) : View(context) {
             val row = frame.row(index)
             val col = frame.col(index)
             val color = frame.fg(index)
-            val attrs = frame.attrs(index)
+            // 选中与否不影响文字怎么画，去掉这一位，免得选区边界把一段文字拆开。
+            val attrs = frame.attrs(index) and Frame.SELECTED.inv()
             val joins = char < 0x80 && run.isNotEmpty() && row == runRow &&
                 col == runCol + run.length && color == runColor && attrs == runAttrs
             if (!joins) {
@@ -199,6 +248,77 @@ class TerminalView(context: Context) : View(context) {
             fillPaint.color = (frame.foreground and 0x00ffffff) or (if (hasFocus()) 0x99000000.toInt() else 0x44000000)
             canvas.drawRect(left, top, left + cellWidth, top + cellHeight, fillPaint)
         }
+
+        // 选区两端的手柄：起点的挂在那一格的左下角，终点的挂在右下角。
+        if (frame.hasSelection) {
+            fillPaint.color = HANDLE_COLOR
+            if (frame.selectionStartRow >= 0) {
+                canvas.drawCircle(startHandleX(frame), handleY(frame.selectionStartRow), handleRadius, fillPaint)
+            }
+            if (frame.selectionEndRow >= 0) {
+                canvas.drawCircle(endHandleX(frame), handleY(frame.selectionEndRow), handleRadius, fillPaint)
+            }
+        }
+    }
+
+    // ---- 选区 ----
+
+    private fun rowAt(y: Float): Int = (y / cellHeight).toInt().coerceAtLeast(0)
+    private fun colAt(x: Float): Int = (x / cellWidth).toInt().coerceAtLeast(0)
+
+    private fun startHandleX(frame: Frame) = frame.selectionStartCol * cellWidth
+    private fun endHandleX(frame: Frame) = (frame.selectionEndCol + 1) * cellWidth
+    private fun handleY(row: Int) = (row + 1) * cellHeight + handleRadius
+
+    /** 手指落在哪个手柄上；都不在时是 NO_END。两个手柄挨得近时取离得更近的那个。 */
+    private fun handleAt(x: Float, y: Float): Int {
+        val frame = frame ?: return NO_END
+        if (!frame.hasSelection) return NO_END
+        val toStart = if (frame.selectionStartRow < 0) Float.MAX_VALUE else {
+            hypot(x - startHandleX(frame), y - handleY(frame.selectionStartRow))
+        }
+        val toEnd = if (frame.selectionEndRow < 0) Float.MAX_VALUE else {
+            hypot(x - endHandleX(frame), y - handleY(frame.selectionEndRow))
+        }
+        return when {
+            toStart > handleReach && toEnd > handleReach -> NO_END
+            toStart < toEnd -> Bridge.SELECTION_START
+            else -> Bridge.SELECTION_END
+        }
+    }
+
+    /** 把正在拖的那一端移到手指所指的单元格。 */
+    private fun dragSelection() {
+        if (draggedEnd == NO_END || !dragArmed || sessionId == 0L) return
+        Bridge.moveSelection(sessionId, draggedEnd, rowAt(dragY + grabY), colAt(dragX + grabX))
+    }
+
+    /** 开始拖一个手柄：记下手指和这一端所在单元格中心的偏移，拖动时一直保持。 */
+    private fun grabHandle(end: Int, x: Float, y: Float) {
+        val frame = frame ?: return
+        val start = end == Bridge.SELECTION_START
+        val row = if (start) frame.selectionStartRow else frame.selectionEndRow
+        val col = if (start) frame.selectionStartCol else frame.selectionEndCol
+        grabX = (col + 0.5f) * cellWidth - x
+        grabY = (row + 0.5f) * cellHeight - y
+        dragX = x
+        dragY = y
+        dragArmed = true
+    }
+
+    /** 拖着选区停在控件的上下边缘时，画面跟着滚，每 4 帧滚一行。 */
+    private fun autoScrollSelection() {
+        if (draggedEnd == NO_END || sessionId == 0L) return
+        if (!dragArmed) return
+        val lines = when {
+            dragY + grabY < cellHeight -> 1
+            dragY + grabY > height - cellHeight -> -1
+            else -> return
+        }
+        dragFrames += 1
+        if (dragFrames % 4 != 0) return
+        Bridge.scroll(sessionId, lines)
+        dragSelection()
     }
 
     private fun drawText(canvas: Canvas, text: CharSequence, row: Int, col: Int, color: Int, attrs: Int) {
@@ -211,9 +331,46 @@ class TerminalView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                draggedEnd = handleAt(event.x, event.y)
+                if (draggedEnd != NO_END) {
+                    // 按在手柄上：这次触摸只用来拖选区，不交给滚动和长按。
+                    grabHandle(draggedEnd, event.x, event.y)
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    return true
+                }
+            }
+            MotionEvent.ACTION_MOVE -> if (draggedEnd != NO_END) {
+                if (!dragArmed && hypot(event.x - dragX, event.y - dragY) > touchSlop) dragArmed = true
+                if (dragArmed) {
+                    dragX = event.x
+                    dragY = event.y
+                    dragSelection()
+                }
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> if (draggedEnd != NO_END) {
+                draggedEnd = NO_END
+                // 长按之后的抬手还要让手势识别器收尾，手柄拖动的不用。
+                if (event.downTime != longPressDownTime) return true
+            }
+        }
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) longPressDownTime = 0L
         pinch.onTouchEvent(event)
         if (!pinch.isInProgress) gestures.onTouchEvent(event)
         return true
+    }
+
+    /** 选中的文字；没有选区时为 null。 */
+    fun selectionText(): String? = if (sessionId == 0L) null else Bridge.selectionText(sessionId)
+
+    fun selectAll() {
+        if (sessionId != 0L) Bridge.selectAll(sessionId)
+    }
+
+    fun clearSelection() {
+        if (sessionId != 0L) Bridge.clearSelection(sessionId)
     }
 
     fun showKeyboard() {
@@ -324,5 +481,8 @@ class TerminalView(context: Context) : View(context) {
 
     companion object {
         private const val DEFAULT_BACKGROUND = 0xff16161a.toInt()
+        private const val SELECTION_COLOR = 0xff2f4a7a.toInt()
+        private const val HANDLE_COLOR = 0xff6c9cf5.toInt()
+        private const val NO_END = -1
     }
 }

@@ -1,14 +1,19 @@
 package dev.nexsh.mobile
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.ConnectivityManager
 import android.net.Network
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -17,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
@@ -25,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -34,6 +41,12 @@ import androidx.compose.ui.unit.sp
  */
 object Sessions {
     val open = mutableStateListOf<OpenSession>()
+
+    /** 通知上的"全部断开"。 */
+    fun closeAll() {
+        open.forEach { Bridge.close(it.id) }
+        open.clear()
+    }
 }
 
 class MainActivity : ComponentActivity() {
@@ -84,6 +97,22 @@ private fun App(startError: String, secrets: Secrets) {
     var screen by remember { mutableStateOf<Screen>(Screen.Hosts) }
     var hosts by remember { mutableStateOf(loadHosts()) }
     var error by remember { mutableStateOf(startError) }
+
+    // 有会话开着就让保活服务跑着。第一次用到时请求通知权限：被拒绝也不影响保活，只是看不到那条通知。
+    val context = LocalContext.current
+    val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val sessionCount = Sessions.open.size
+    LaunchedEffect(sessionCount) {
+        if (sessionCount > 0 && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        KeepAliveService.update(context.applicationContext, sessionCount)
+    }
+    // 会话被通知上的"全部断开"关掉时，不停在一个已经不存在的终端页面上。
+    val shown = screen
+    if (shown is Screen.Terminal && shown.session !in Sessions.open) screen = Screen.Hosts
 
     // 内容避开状态栏、导航栏和软键盘；它们后面露出的是栏的颜色。
     Box(Modifier.fillMaxSize().background(Palette.Bar).safeDrawingPadding()) {

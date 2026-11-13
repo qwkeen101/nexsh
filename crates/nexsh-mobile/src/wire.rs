@@ -5,25 +5,26 @@
 //!
 //! | 偏移 | 类型 | 含义 |
 //! |---|---|---|
-//! | 0 | u8 | 版本，目前是 1 |
+//! | 0 | u8 | 版本，目前是 2 |
 //! | 1 | u8 | 状态，见 [`State`] |
-//! | 2 | u8 | 模式位：1 应用光标键，2 括号粘贴，4 备用屏幕 |
+//! | 2 | u8 | 模式位：1 应用光标键，2 括号粘贴，4 备用屏幕，8 有选区 |
 //! | 3 | u8 | 保留 |
 //! | 4 | u64 | 代数，画面每变一次加一 |
 //! | 12 | u16, u16 | 列数、行数 |
 //! | 16 | i16, i16 | 光标的行、列；光标不可见时都是 -1 |
 //! | 20 | u32, u32 | 默认背景色、默认前景色，0x00RRGGBB |
 //! | 28 | i32 | 延迟毫秒；没有测到时为 -1 |
-//! | 32 | u16 + 字节 | 标题（UTF-8） |
+//! | 32 | i16 × 4 | 选区起点的行、列，终点的行、列；没有选区或那一端不在可见区域时是 -1 |
+//! | 40 | u16 + 字节 | 标题（UTF-8） |
 //! | … | u16 + 字节 | 提示信息（UTF-8） |
 //! | … | u32 | 单元格数 |
 //! | … | 17 字节 × N | 行 u16、列 u16、字符 u32、前景 u32、背景 u32、属性 u8 |
 //!
-//! 属性位：1 粗体，2 斜体，4 下划线，8 删除线，16 宽字符。
+//! 属性位：1 粗体，2 斜体，4 下划线，8 删除线，16 宽字符，32 在选区里。
 
 use nexsh_term::{Frame, Rgb};
 
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const CELL_SIZE: usize = 17;
 
 /// 会话所处的阶段。数值是协议的一部分，只能追加。
@@ -73,7 +74,8 @@ pub fn encode(snapshot: &Snapshot) -> Vec<u8> {
     let mut out = Vec::with_capacity(capacity);
     let modes = snapshot.app_cursor as u8
         | (snapshot.bracketed_paste as u8) << 1
-        | (snapshot.alt_screen as u8) << 2;
+        | (snapshot.alt_screen as u8) << 2
+        | (frame.selection.is_some() as u8) << 3;
     out.extend_from_slice(&[VERSION, snapshot.state as u8, modes, 0]);
     out.extend_from_slice(&snapshot.generation.to_le_bytes());
     out.extend_from_slice(&(frame.cols as u16).to_le_bytes());
@@ -88,6 +90,12 @@ pub fn encode(snapshot: &Snapshot) -> Vec<u8> {
     out.extend_from_slice(&rgb(frame.foreground).to_le_bytes());
     let latency = snapshot.latency_ms.map(|ms| ms.min(i32::MAX as u64) as i32).unwrap_or(-1);
     out.extend_from_slice(&latency.to_le_bytes());
+    let ends = frame.selection.map(|span| [span.start, span.end]).unwrap_or([None, None]);
+    for end in ends {
+        let (row, col) = end.map(|at| (at.row as i16, at.col as i16)).unwrap_or((-1, -1));
+        out.extend_from_slice(&row.to_le_bytes());
+        out.extend_from_slice(&col.to_le_bytes());
+    }
     put_text(&mut out, snapshot.title);
     put_text(&mut out, snapshot.message);
     out.extend_from_slice(&(frame.cells.len() as u32).to_le_bytes());
@@ -101,7 +109,8 @@ pub fn encode(snapshot: &Snapshot) -> Vec<u8> {
             | (cell.italic as u8) << 1
             | (cell.underline as u8) << 2
             | (cell.strikeout as u8) << 3
-            | (cell.wide as u8) << 4;
+            | (cell.wide as u8) << 4
+            | (cell.selected as u8) << 5;
         out.push(attrs);
     }
     out
@@ -135,9 +144,10 @@ mod tests {
         assert_eq!(u16::from_le_bytes(bytes[12..14].try_into().unwrap()), 20);
         assert_eq!(u16::from_le_bytes(bytes[14..16].try_into().unwrap()), 4);
         assert_eq!(i32::from_le_bytes(bytes[28..32].try_into().unwrap()), 42);
-        let title_len = u16::from_le_bytes(bytes[32..34].try_into().unwrap()) as usize;
-        assert_eq!(&bytes[34..34 + title_len], "标题".as_bytes());
-        let message_at = 34 + title_len;
+        assert_eq!(&bytes[32..40], &[0xff; 8], "没有选区时四个坐标都是 -1");
+        let title_len = u16::from_le_bytes(bytes[40..42].try_into().unwrap()) as usize;
+        assert_eq!(&bytes[42..42 + title_len], "标题".as_bytes());
+        let message_at = 42 + title_len;
         assert_eq!(u16::from_le_bytes(bytes[message_at..message_at + 2].try_into().unwrap()), 0);
         let count_at = message_at + 2;
         let count = u32::from_le_bytes(bytes[count_at..count_at + 4].try_into().unwrap()) as usize;

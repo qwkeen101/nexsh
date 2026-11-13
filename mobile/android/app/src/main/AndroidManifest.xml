@@ -4,6 +4,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 只用来得知网络恢复，好让断开的会话马上重连。 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 有会话开着时用前台服务保住进程，退到后台连接不断；前台服务必须带一条通知。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <!-- 主机列表和已保存的密码不进系统备份：密码的加密密钥留在这台设备的密钥库里，换了设备也解不开。 -->
     <application
@@ -21,5 +25,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="保持用户打开的 SSH 终端会话的网络连接" />
+        </service>
     </application>
 </manifest>
