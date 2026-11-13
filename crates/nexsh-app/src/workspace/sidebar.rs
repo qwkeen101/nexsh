@@ -225,15 +225,10 @@ impl Workspace {
             }
         }
 
-        let hint = if !elements.is_empty() || self.error.is_some() {
-            None
-        } else if searching {
-            Some("没有匹配的主机")
-        } else {
-            Some("还没有主机。点右上角的加号添加，或在 ~/.ssh/config 里配置。")
-        };
-        let hint = hint
-            .map(|text| div().px_3().py_2().text_color(rgb(theme::TEXT_MUTED)).child(text));
+        // 列表为空时不放说明文字，留白即可；只有搜不到东西时才提示。
+        let hint = (searching && elements.is_empty()).then(|| {
+            div().px_3().py_2().text_color(rgb(theme::TEXT_MUTED)).child("没有匹配的主机")
+        });
         let error = self.error.clone().map(|message| {
             div().px_3().py_2().text_color(rgb(theme::ERROR)).child(message)
         });
