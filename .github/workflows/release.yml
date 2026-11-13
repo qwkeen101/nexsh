@@ -156,9 +156,51 @@ jobs:
             nexsh-*-setup.exe
           if-no-files-found: error
 
+  # Android 安装包：只在推送标签时构建。
+  android:
+    name: build (android)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-release
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -o mobile/android/app/src/main/jniLibs build --release -p nexsh-mobile
+          # 版本号 v1.2.3 对应版本码 10203，新版本总比旧版本大。
+          export NEXSH_VERSION="${TAG#v}"
+          IFS=. read -r major minor patch <<< "$NEXSH_VERSION"
+          export NEXSH_VERSION_CODE=$((major * 10000 + minor * 100 + patch))
+          (cd mobile/android && gradle --no-daemon --console=plain assembleDebug)
+          cp mobile/android/app/build/outputs/apk/debug/app-debug.apk "nexsh-${TAG}-android-arm64.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-android
+          path: nexsh-*.apk
+          if-no-files-found: error
+
   release:
     name: publish release
-    needs: build
+    # Android 包没打出来也照常发布桌面端的。
+    needs: [build, android]
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -187,6 +229,9 @@ jobs:
 
             Windows (x86_64)：安装包 `nexsh-${{ github.ref_name }}-windows-x86_64-setup.exe`，免安装压缩包 `…-windows-x86_64.zip`。
             里面都有桌面程序 `nexsh` 和命令行工具 `nexsh-cli`。
+
+            Android (arm64)：`nexsh-${{ github.ref_name }}-android-arm64.apk`，试验版。安装包用的是每次构建临时生成的调试签名，
+            升级时系统会提示签名不一致，需要先卸载旧版（已保存的主机会一并清除）。
 
             安装程序没有代码签名，SmartScreen 拦截时点"更多信息 → 仍要运行"。
 
