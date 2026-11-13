@@ -1,26 +1,18 @@
 //! 主窗口：左侧主机列表，右侧标签页和终端。
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 use gpui::{
-    Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Window,
-    div, prelude::*, px, rgb, rgba,
+    Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent,
+    Subscription, Window, div, prelude::*, px, rgb,
 };
+use nexsh_core::secrets::{self, SecretKind};
 use nexsh_core::{Host, HostStore, LatencyLevel, search, ssh_config};
 
+use crate::host_form::{HostDraft, HostForm, HostFormEvent, SecretChange};
 use crate::terminal_view::{SessionState, TerminalView};
 use crate::text_input::TextInput;
 use crate::theme;
-
-/// "添加主机"对话框。
-struct HostForm {
-    name: Entity<TextInput>,
-    target: Entity<TextInput>,
-    group: Entity<TextInput>,
-    identity_file: Entity<TextInput>,
-    error: Option<String>,
-}
 
 /// 侧栏里的一个分组，`hosts` 是 `Workspace::hosts` 的下标。
 struct Section {
@@ -30,13 +22,6 @@ struct Section {
 
 /// 没有填分组的已保存主机归在这里。
 const UNGROUPED: &str = "未分组";
-
-impl HostForm {
-    /// 按对话框里从上到下的顺序，Tab 依此切换。
-    fn inputs(&self) -> [&Entity<TextInput>; 4] {
-        [&self.target, &self.name, &self.group, &self.identity_file]
-    }
-}
 
 pub struct Workspace {
     focus_handle: FocusHandle,
@@ -53,7 +38,9 @@ pub struct Workspace {
     search: Entity<TextInput>,
     /// 被折叠的分组（按标题）。搜索时不生效：有匹配的分组总是展开。
     collapsed: HashSet<String>,
-    form: Option<HostForm>,
+    form: Option<Entity<HostForm>>,
+    /// 对话框关闭时一并丢弃，不再接收它的事件。
+    form_subscription: Option<Subscription>,
     tabs: Vec<Entity<TerminalView>>,
     active: usize,
 }
@@ -79,6 +66,7 @@ impl Workspace {
             saved_count: 0,
             error,
             form: None,
+            form_subscription: None,
             tabs: Vec::new(),
             active: 0,
         };
@@ -165,123 +153,108 @@ impl Workspace {
         let Some(store) = self.store.as_mut() else { return };
         let name = self.hosts[index].name.clone();
         let result = store.remove(&name).and_then(|_| store.save());
+        if result.is_ok() {
+            // 主机没了，它的密码也不该留在钥匙串里。读写钥匙串可能卡顿，放到后台。
+            drop(nexsh_core::spawn_blocking(move || secrets::forget(&name)));
+        }
         self.error = result.err().map(|error| error.to_string());
         self.rebuild_hosts();
         cx.notify();
     }
 
-    fn open_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.store.is_none() {
-            return;
+    /// 打开主机对话框；`original` 为 None 时是新建。
+    fn open_form(&mut self, original: Option<Host>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(store) = self.store.as_ref() else { return };
+        let editing = original.as_ref().map(|host| host.name.as_str());
+        // 名称在整个列表里唯一，~/.ssh/config 里的也算。
+        let taken_names = self
+            .hosts
+            .iter()
+            .map(|host| host.name.clone())
+            .filter(|name| Some(name.as_str()) != editing)
+            .collect();
+        let mut groups: Vec<String> = Vec::new();
+        for group in store.hosts().iter().filter_map(|host| host.group.as_ref()) {
+            if !groups.contains(group) {
+                groups.push(group.clone());
+            }
         }
-        let name = cx.new(|cx| TextInput::new("可留空，默认用地址", cx));
-        let target = cx.new(|cx| TextInput::new("user@host 或 user@host:端口", cx));
-        let group = cx.new(|cx| TextInput::new("可留空，例如 生产环境", cx));
-        let identity_file = cx.new(|cx| TextInput::new("可留空，例如 ~/.ssh/id_ed25519", cx));
-        let first = target.read(cx).focus_handle(cx);
-        window.focus(&first);
-        self.form = Some(HostForm { name, target, group, identity_file, error: None });
+
+        let form = cx.new(|cx| HostForm::new(original, taken_names, groups, window, cx));
+        let subscription = cx.subscribe_in(
+            &form,
+            window,
+            |this, form, event: &HostFormEvent, window, cx| match event {
+                HostFormEvent::Cancel => this.close_form(window, cx),
+                HostFormEvent::Submit { draft, connect } => match this.apply_draft(draft) {
+                    Ok(()) => {
+                        this.error = None;
+                        this.rebuild_hosts();
+                        this.close_form(window, cx);
+                        if *connect {
+                            this.open_host(draft.host.clone(), window, cx);
+                        }
+                    }
+                    Err(message) => form.update(cx, |form, cx| form.set_failure(message, cx)),
+                },
+            },
+        );
+        self.form = Some(form);
+        self.form_subscription = Some(subscription);
         cx.notify();
     }
 
     fn close_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.form = None;
+        self.form_subscription = None;
         self.focus_active(window, cx);
         cx.notify();
     }
 
-    fn submit_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.form.as_ref() else { return };
-        let name = form.name.read(cx).text().trim().to_string();
-        let target = form.target.read(cx).text().trim().to_string();
-        let group = form.group.read(cx).text().trim().to_string();
-        let identity_file = form.identity_file.read(cx).text().trim().to_string();
-
-        let result = self.add_host(&name, &target, &group, &identity_file);
-        match result {
-            Ok(()) => {
-                self.error = None;
-                self.rebuild_hosts();
-                self.close_form(window, cx);
-            }
-            Err(message) => {
-                if let Some(form) = self.form.as_mut() {
-                    form.error = Some(message);
-                }
-                cx.notify();
-            }
-        }
-    }
-
-    fn add_host(
-        &mut self,
-        name: &str,
-        target: &str,
-        group: &str,
-        identity_file: &str,
-    ) -> Result<(), String> {
-        if target.is_empty() {
-            return Err("请填写地址".to_string());
-        }
-        let mut host = Host::parse_target(target)
-            .ok_or_else(|| "地址格式不对，应为 user@host 或 user@host:端口".to_string())?;
-        if !name.is_empty() {
-            host.name = name.to_string();
-        }
-        if !group.is_empty() {
-            host.group = Some(group.to_string());
-        }
-        if !identity_file.is_empty() {
-            host.identity_file = Some(expand_home(identity_file));
-        }
+    /// 保存对话框的内容：先写钥匙串，再写主机列表。
+    /// 密码存不进去就整个不保存，不留下一台"以为存了密码"的主机。
+    fn apply_draft(&mut self, draft: &HostDraft) -> Result<(), String> {
         let store = self.store.as_mut().ok_or_else(|| "主机列表不可用".to_string())?;
-        let name = host.name.clone();
-        store.add(host).map_err(|error| error.to_string())?;
-        if let Err(error) = store.save() {
-            // 没写进文件就不要留在列表里，否则下次启动会凭空消失。
-            let _ = store.remove(&name);
-            return Err(error.to_string());
+        let name = draft.host.name.as_str();
+
+        if let Some(old_name) = draft.original_name.as_deref().filter(|old| *old != name) {
+            // 改名时把原来保存的密码带过去；钥匙串不可用时本来就没有东西可带。
+            let _ = secrets::rename(old_name, name);
         }
-        Ok(())
-    }
-
-    /// Tab 在对话框的输入框之间循环，Shift+Tab 反向。
-    fn focus_next_field(&self, backwards: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(form) = self.form.as_ref() else { return };
-        let handles = form.inputs().map(|input| input.read(cx).focus_handle(cx));
-        let current = handles.iter().position(|handle| handle.is_focused(window));
-        let count = handles.len();
-        let next = match (current, backwards) {
-            (Some(index), false) => (index + 1) % count,
-            (Some(index), true) => (index + count - 1) % count,
-            (None, _) => 0,
-        };
-        window.focus(&handles[next]);
-    }
-
-    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.form.is_none() {
-            // 没有对话框时，这里只处理搜索框里的回车和 Esc。
-            if !self.search.read(cx).focus_handle(cx).is_focused(window) {
-                return;
-            }
-            match event.keystroke.key.as_str() {
-                "enter" => self.submit_search(window, cx),
-                "escape" => {
-                    self.search.update(cx, |input, cx| input.clear(cx));
-                    self.focus_active(window, cx);
+        let changes = [
+            (SecretKind::Password, &draft.password, "密码"),
+            (SecretKind::Passphrase, &draft.passphrase, "口令"),
+        ];
+        for (kind, change, label) in changes {
+            match change {
+                SecretChange::Keep => {}
+                SecretChange::Clear => {
+                    let _ = secrets::delete(kind, name);
                 }
-                _ => return,
+                SecretChange::Set(secret) => secrets::store(kind, name, secret).map_err(|error| {
+                    format!("{label}没有保存：{error}。把{label}留空可以先保存主机，连接时再输入。")
+                })?,
             }
-            cx.stop_propagation();
+        }
+
+        let listed = match &draft.original_name {
+            Some(old_name) => store.replace(old_name, draft.host.clone()),
+            None => store.add(draft.host.clone()),
+        };
+        listed.map_err(|error| error.to_string())?;
+        store.save().map_err(|error| error.to_string())
+    }
+
+    /// 搜索框里的回车和 Esc。对话框自己处理按键，其余按键归终端。
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.search.read(cx).focus_handle(cx).is_focused(window) {
             return;
         }
         match event.keystroke.key.as_str() {
-            "enter" => self.submit_form(window, cx),
-            "escape" => self.close_form(window, cx),
-            "tab" => {
-                self.focus_next_field(event.keystroke.modifiers.shift, window, cx);
-                cx.notify();
+            "enter" => self.submit_search(window, cx),
+            "escape" => {
+                self.search.update(cx, |input, cx| input.clear(cx));
+                self.focus_active(window, cx);
             }
             _ => return,
         }
@@ -442,28 +415,38 @@ impl Workspace {
                                         .child(host.address()),
                                 ),
                         )
+                        // 编辑和删除只在鼠标移到这一行时出现，平时不抢视线。
                         .when(deletable, |row| {
-                            row.child(
+                            let action = |label: &'static str, danger: bool| {
                                 div()
                                     .px_1()
                                     .rounded_sm()
+                                    .text_xs()
                                     .text_color(rgb(theme::TEXT_MUTED))
-                                    // 删除按钮只在鼠标移到这一行时出现，平时不抢视线。
                                     .opacity(0.)
                                     .group_hover("host-row", |style| style.opacity(1.))
-                                    .hover(|style| {
-                                        style.bg(rgb(theme::BORDER)).text_color(rgb(theme::ERROR))
+                                    .hover(move |style| {
+                                        let color = if danger { theme::ERROR } else { theme::TEXT };
+                                        style.bg(rgb(theme::BORDER)).text_color(rgb(color))
                                     })
-                                    .on_mouse_down(
-                                        MouseButton::Left,
-                                        cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
-                                            // 不让点击冒泡到整行，否则删除的同时会去连接。
-                                            cx.stop_propagation();
-                                            this.delete_host(index, cx);
-                                        }),
-                                    )
-                                    .child("×"),
-                            )
+                                    .child(label)
+                            };
+                            let editable = host.clone();
+                            row.child(action("编辑", false).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                    // 不让点击冒泡到整行，否则会同时去连接。
+                                    cx.stop_propagation();
+                                    this.open_form(Some(editable.clone()), window, cx);
+                                }),
+                            ))
+                            .child(action("删除", true).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
+                                    cx.stop_propagation();
+                                    this.delete_host(index, cx);
+                                }),
+                            ))
                         }),
                 );
             }
@@ -490,7 +473,9 @@ impl Workspace {
                 .hover(|style| style.bg(rgb(theme::HOVER_BG)))
                 .on_mouse_down(
                     MouseButton::Left,
-                    cx.listener(|this, _: &MouseDownEvent, window, cx| this.open_form(window, cx)),
+                    cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        this.open_form(None, window, cx)
+                    }),
                 )
                 .child("+ 添加")
         });
@@ -623,108 +608,6 @@ impl Workspace {
             .children(latency)
             .child(format!("{cols}×{rows}"))
     }
-
-    /// 盖住整个窗口的半透明遮罩，中间是对话框。
-    fn render_form(&self, form: &HostForm, cx: &mut Context<Self>) -> Div {
-        let field = |label: &'static str, input: &Entity<TextInput>| {
-            div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(div().text_color(rgb(theme::TEXT_MUTED)).child(label))
-                .child(input.clone())
-        };
-        // 按钮不随对话框变窄而压缩或换行；主操作用实心底色，一眼能分出主次。
-        let button = |label: &'static str, primary: bool| {
-            let button = div()
-                .px_4()
-                .py_1()
-                .flex_shrink_0()
-                .whitespace_nowrap()
-                .rounded_sm()
-                .cursor_pointer()
-                .border_1()
-                .child(label);
-            if primary {
-                button
-                    .bg(rgb(theme::ACCENT))
-                    .border_color(rgb(theme::ACCENT))
-                    .text_color(rgb(theme::WINDOW_BG))
-                    .hover(|style| style.opacity(0.9))
-            } else {
-                button
-                    .border_color(rgb(theme::BORDER))
-                    .text_color(rgb(theme::TEXT))
-                    .hover(|style| style.bg(rgb(theme::HOVER_BG)))
-            }
-        };
-
-        div()
-            .absolute()
-            .top_0()
-            .left_0()
-            .size_full()
-            // 窗口很小时对话框贴着这圈留白，不会顶到窗口边缘。
-            .p_4()
-            .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgba(0x00000099))
-            // 挡住遮罩下面的主机列表和终端，鼠标点不穿。
-            .occlude()
-            .child(
-                div()
-                    .id("host-form")
-                    .w(px(440.))
-                    .max_w_full()
-                    // 窗口比对话框矮时，对话框内部滚动，按钮始终够得着。
-                    .max_h_full()
-                    .overflow_y_scroll()
-                    .p_5()
-                    .flex()
-                    .flex_col()
-                    .gap_3()
-                    .bg(rgb(theme::SIDEBAR_BG))
-                    .border_1()
-                    .border_color(rgb(theme::BORDER))
-                    .rounded_md()
-                    .child(div().text_size(px(15.)).child("添加主机"))
-                    .child(field("地址", &form.target))
-                    .child(field("名称", &form.name))
-                    .child(field("分组", &form.group))
-                    .child(field("私钥文件", &form.identity_file))
-                    .children(form.error.clone().map(|message| {
-                        div().text_color(rgb(theme::ERROR)).child(message)
-                    }))
-                    // 说明文字单独一行，可以自由换行；按钮另起一行靠右，不和文字抢宽度。
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .child("密码在连接时输入，不会保存。Tab 切换输入框，回车保存，Esc 取消。"),
-                    )
-                    .child(
-                        div()
-                            .pt_1()
-                            .flex()
-                            .items_center()
-                            .justify_end()
-                            .gap_2()
-                            .child(button("取消", false).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                                    this.close_form(window, cx)
-                                }),
-                            ))
-                            .child(button("保存", true).on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseDownEvent, window, cx| {
-                                    this.submit_form(window, cx)
-                                }),
-                            )),
-                    ),
-            )
-    }
 }
 
 fn state_color(state: SessionState) -> u32 {
@@ -756,15 +639,6 @@ fn dot(color: Option<u32>) -> Div {
     }
 }
 
-/// 把开头的 `~/` 换成用户主目录。
-fn expand_home(path: &str) -> PathBuf {
-    let rest = path.strip_prefix("~/").or_else(|| path.strip_prefix("~\\"));
-    match (rest, std::env::home_dir()) {
-        (Some(rest), Some(home)) => home.join(rest),
-        _ => PathBuf::from(path),
-    }
-}
-
 impl Focusable for Workspace {
     fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
@@ -785,7 +659,6 @@ impl Render for Workspace {
                 .text_color(rgb(theme::TEXT_MUTED))
                 .child("从左侧选择一台主机开始连接"),
         };
-        let form = self.form.as_ref().map(|form| self.render_form(form, cx));
 
         div()
             .size_full()
@@ -808,6 +681,6 @@ impl Render for Workspace {
                     .child(content)
                     .child(self.render_status_bar(cx)),
             )
-            .children(form)
+            .children(self.form.clone())
     }
 }

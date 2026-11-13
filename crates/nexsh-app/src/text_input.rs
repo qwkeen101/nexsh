@@ -26,6 +26,12 @@ pub struct TextInput {
     marked: Option<Range<usize>>,
     placeholder: SharedString,
     masked: bool,
+    /// 内容没通过校验，边框标红。
+    invalid: bool,
+    /// 内容每改动一次加一。观察者用它区分"文字变了"和"只是重绘"。
+    revision: u64,
+    /// 最近一次改动是不是粘贴。表单用它判断要不要把粘贴进来的地址拆开。
+    pasted: bool,
     /// 上一帧的排版结果，输入法用它来摆放候选框。
     last_line: Option<ShapedLine>,
 }
@@ -39,6 +45,9 @@ impl TextInput {
             marked: None,
             placeholder: placeholder.into(),
             masked: false,
+            invalid: false,
+            revision: 0,
+            pasted: false,
             last_line: None,
         }
     }
@@ -54,16 +63,48 @@ impl TextInput {
     }
 
     pub fn clear(&mut self, cx: &mut Context<Self>) {
-        self.text.clear();
-        self.cursor = 0;
-        self.marked = None;
+        self.set_text("", cx);
+    }
+
+    /// 换掉全部内容，光标放到末尾。
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        if self.text != text || self.marked.is_some() {
+            self.text = text.to_string();
+            self.cursor = self.text.len();
+            self.marked = None;
+            self.pasted = false;
+            self.revision += 1;
+            cx.notify();
+        }
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.placeholder = placeholder.into();
         cx.notify();
+    }
+
+    pub fn set_invalid(&mut self, invalid: bool, cx: &mut Context<Self>) {
+        if self.invalid != invalid {
+            self.invalid = invalid;
+            cx.notify();
+        }
+    }
+
+    /// 最近一次改动是否为粘贴；读取后复位。
+    pub fn take_pasted(&mut self) -> bool {
+        std::mem::take(&mut self.pasted)
     }
 
     /// 把 `range` 换成 `new_text`，光标放到新文字之后。
     fn splice(&mut self, range: Range<usize>, new_text: &str) {
         self.text.replace_range(range.clone(), new_text);
         self.cursor = range.start + new_text.len();
+        self.pasted = false;
+        self.revision += 1;
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
@@ -157,6 +198,7 @@ impl TextInput {
                     // 单行输入框：粘贴内容里的换行直接去掉。
                     let pasted: String = pasted.chars().filter(|ch| !ch.is_control()).collect();
                     self.splice(self.cursor..self.cursor, &pasted);
+                    self.pasted = true;
                 }
                 true
             }
@@ -290,7 +332,13 @@ impl Render for TextInput {
         let paint_view = cx.entity();
         let focus_handle = self.focus_handle.clone();
         let focused = self.focus_handle.is_focused(window);
-        let border = if focused { theme::ACCENT } else { theme::BORDER };
+        let border = if self.invalid {
+            theme::ERROR
+        } else if focused {
+            theme::ACCENT
+        } else {
+            theme::BORDER
+        };
 
         div()
             .h(px(30.))

@@ -12,7 +12,7 @@ exclude = ["vendor"]
 default-members = ["crates/nexsh-core", "crates/nexsh-term", "crates/nexsh-cli"]
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.89"
 publish = false
@@ -26,6 +26,7 @@ anyhow = "1"
 crossterm = "0.29"
 directories = "6"
 gpui = "0.2.2"
+keyring = "4"
 log = "0.4"
 rpassword = "7"
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }

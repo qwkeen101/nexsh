@@ -13,7 +13,8 @@ use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCe
 use russh::{ChannelMsg, Disconnect, client};
 use tokio::sync::mpsc;
 
-use crate::host::Host;
+use crate::host::{AuthMethod, Host};
+use crate::secrets::{self, SecretKind};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
@@ -61,6 +62,8 @@ pub enum HostKeyPolicy {
     AcceptNew,
     /// 拒绝。
     Strict,
+    /// 接受但不记录。测试连接时用：只是试一下，不应该改动 known_hosts。
+    AcceptOnce,
 }
 
 #[derive(Clone, Debug)]
@@ -74,11 +77,14 @@ pub struct ConnectOptions {
     pub host_key_policy: HostKeyPolicy,
     /// 为 None 时使用 `~/.ssh/known_hosts`。
     pub known_hosts_path: Option<PathBuf>,
+    /// 没有给出密码或口令时，到系统钥匙串里按这个主机名称查找保存的；None 表示不查。
+    pub saved_secrets: Option<String>,
 }
 
 impl ConnectOptions {
     pub fn new(host: Host, cols: u32, rows: u32) -> Self {
         Self {
+            saved_secrets: Some(host.name.clone()),
             host,
             cols,
             rows,
@@ -167,6 +173,7 @@ impl ClientHandler {
                             .map_err(|e| SshError::KnownHosts(e.to_string()))?;
                         Ok(Some(fingerprint))
                     }
+                    HostKeyPolicy::AcceptOnce => Ok(Some(fingerprint)),
                 }
             }
             Err(keys::Error::KeyChanged { line }) => {
@@ -204,11 +211,66 @@ impl client::Handler for ClientHandler {
     }
 }
 
-async fn run_session(
+/// 测试连接的结果。
+#[derive(Clone, Debug)]
+pub struct ProbeReport {
+    /// 从开始连接到登录成功用了多久。
+    pub elapsed: Duration,
+    /// 这台主机不在 known_hosts 里时，它的密钥指纹。
+    pub new_host_key: Option<String>,
+}
+
+/// 用给定的参数登录一次然后断开，不打开终端，也不改动 known_hosts。
+/// 立即返回，结果从通道里取；丢掉通道不会让后台的尝试提前结束，它最多持续到连接超时。
+pub fn spawn_probe(
+    mut options: ConnectOptions,
+) -> tokio::sync::oneshot::Receiver<Result<ProbeReport, SshError>> {
+    if options.host_key_policy == HostKeyPolicy::AcceptNew {
+        options.host_key_policy = HostKeyPolicy::AcceptOnce;
+    }
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    crate::runtime().spawn(async move {
+        let started = Instant::now();
+        let outcome = async {
+            let (handle, new_host_key) = establish(options).await?;
+            let _ = handle.disconnect(Disconnect::ByApplication, "", "en").await;
+            Ok::<_, SshError>(ProbeReport { elapsed: started.elapsed(), new_host_key })
+        }
+        .await;
+        let _ = sender.send(outcome);
+    });
+    receiver
+}
+
+/// 没有给出的密码和口令，到钥匙串里找保存的。钥匙串读不了时当作没有保存，
+/// 之后照常向用户询问。
+async fn with_saved_secrets(mut options: ConnectOptions) -> ConnectOptions {
+    let Some(name) = options.saved_secrets.clone() else { return options };
+    let need_password = options.password.is_none() && options.host.auth != AuthMethod::Key;
+    let need_passphrase =
+        options.key_passphrase.is_none() && options.host.auth != AuthMethod::Password;
+    if !need_password && !need_passphrase {
+        return options;
+    }
+    // 读钥匙串可能要等系统弹窗解锁，不能占着异步线程。
+    let lookup = tokio::task::spawn_blocking(move || {
+        let read = |wanted: bool, kind| {
+            wanted.then(|| secrets::load(kind, &name).ok().flatten()).flatten()
+        };
+        (read(need_password, SecretKind::Password), read(need_passphrase, SecretKind::Passphrase))
+    });
+    if let Ok((password, passphrase)) = lookup.await {
+        options.password = options.password.or(password);
+        options.key_passphrase = options.key_passphrase.or(passphrase);
+    }
+    options
+}
+
+/// 建立连接、校验主机密钥并完成认证。返回连接，以及首次见到这台主机时它的密钥指纹。
+async fn establish(
     options: ConnectOptions,
-    mut commands: mpsc::UnboundedReceiver<SessionCommand>,
-    events: &mpsc::Sender<SessionEvent>,
-) -> Result<(), SshError> {
+) -> Result<(client::Handle<ClientHandler>, Option<String>), SshError> {
+    let options = with_saved_secrets(options).await;
     let host = &options.host;
     let address = format!("{}:{}", host.hostname, host.port);
 
@@ -245,14 +307,24 @@ async fn run_session(
         }
         Ok(Ok(handle)) => handle,
     };
-    if let Some(fingerprint) = learned {
+    authenticate(&mut handle, &options).await?;
+    Ok((handle, learned))
+}
+
+async fn run_session(
+    options: ConnectOptions,
+    mut commands: mpsc::UnboundedReceiver<SessionCommand>,
+    events: &mpsc::Sender<SessionEvent>,
+) -> Result<(), SshError> {
+    let (cols, rows) = (options.cols, options.rows);
+    let learning = options.host_key_policy == HostKeyPolicy::AcceptNew;
+    let (handle, new_host_key) = establish(options).await?;
+    if let Some(fingerprint) = new_host_key.filter(|_| learning) {
         let _ = events.send(SessionEvent::HostKeyLearned(fingerprint)).await;
     }
 
-    authenticate(&mut handle, &options).await?;
-
     let mut channel = handle.channel_open_session().await?;
-    channel.request_pty(false, TERM, options.cols, options.rows, 0, 0, &[]).await?;
+    channel.request_pty(false, TERM, cols, rows, 0, 0, &[]).await?;
     channel.request_shell(true).await?;
     if events.send(SessionEvent::Connected).await.is_err() {
         return Ok(());
@@ -312,7 +384,7 @@ async fn run_session(
     Ok(())
 }
 
-/// 依次尝试：ssh-agent、私钥文件、密码。
+/// 自动模式依次尝试 ssh-agent、私钥文件、密码；指定了认证方式时只用那一种。
 async fn authenticate(
     handle: &mut client::Handle<ClientHandler>,
     options: &ConnectOptions,
@@ -321,12 +393,15 @@ async fn authenticate(
     let rsa_hash = handle.best_supported_rsa_hash().await?.flatten();
     let mut tried = Vec::new();
 
-    if try_agent(handle, user, rsa_hash, &mut tried).await {
+    let method = options.host.auth;
+    if method == AuthMethod::Auto && try_agent(handle, user, rsa_hash, &mut tried).await {
         return Ok(());
     }
 
     let mut encrypted_key = None;
-    for path in identity_candidates(&options.host) {
+    let key_files =
+        if method == AuthMethod::Password { Vec::new() } else { identity_candidates(&options.host) };
+    for path in key_files {
         // 先不带口令读：没加密的私钥不受口令影响，加密的再用口令重试。
         let loaded = match keys::load_secret_key(&path, None) {
             Err(keys::Error::KeyIsEncrypted) => match options.key_passphrase.as_deref() {
@@ -354,6 +429,14 @@ async fn authenticate(
             }
             Err(error) => tried.push(format!("私钥 {}（{error}）", path.display())),
         }
+    }
+
+    if method == AuthMethod::Key {
+        // 只用私钥：不退回密码，免得用户以为私钥生效了。
+        return Err(match encrypted_key {
+            Some(path) => SshError::PassphraseRequired(path),
+            None => SshError::AuthFailed { tried },
+        });
     }
 
     if let Some(password) = &options.password {

@@ -169,10 +169,13 @@ impl TerminalView {
                 secret: Secret::Password,
                 message: format!("输入 {} 的密码", self.host.address()),
             }),
-            SshError::AuthFailed { .. } if self.options.password.is_some() => Some(Prompt {
-                secret: Secret::Password,
-                message: format!("密码不正确，重新输入 {} 的密码", self.host.address()),
-            }),
+            // 试过密码但被拒绝：可能是刚输错了，也可能是钥匙串里保存的密码已经失效。
+            SshError::AuthFailed { tried } if tried.iter().any(|method| method == "密码") => {
+                Some(Prompt {
+                    secret: Secret::Password,
+                    message: format!("密码不正确，重新输入 {} 的密码", self.host.address()),
+                })
+            }
             _ => None,
         }
     }

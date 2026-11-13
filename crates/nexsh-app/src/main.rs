@@ -3,6 +3,7 @@
 // Windows 上发布版不弹出控制台窗口。
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod host_form;
 mod terminal_view;
 mod text_input;
 mod theme;

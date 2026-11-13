@@ -79,6 +79,20 @@ impl HostStore {
         Ok(())
     }
 
+    /// 用 `host` 替换名为 `name` 的主机，位置不变；改名时不能和别的主机重名。
+    pub fn replace(&mut self, name: &str, host: Host) -> Result<(), StoreError> {
+        let index = self
+            .hosts
+            .iter()
+            .position(|h| h.name == name)
+            .ok_or_else(|| StoreError::NotFound(name.to_string()))?;
+        if host.name != name && self.find(&host.name).is_some() {
+            return Err(StoreError::Duplicate(host.name));
+        }
+        self.hosts[index] = host;
+        Ok(())
+    }
+
     pub fn remove(&mut self, name: &str) -> Result<Host, StoreError> {
         let index = self
             .hosts
@@ -127,6 +141,12 @@ mod tests {
         assert_eq!(reloaded.hosts(), &[host]);
 
         let mut reloaded = reloaded;
+        let mut renamed = host.clone();
+        renamed.name = "production".into();
+        assert!(matches!(reloaded.replace("missing", renamed.clone()), Err(StoreError::NotFound(_))));
+        reloaded.replace("prod", renamed.clone()).unwrap();
+        assert_eq!(reloaded.hosts(), &[renamed]);
+        reloaded.replace("production", host.clone()).unwrap();
         reloaded.remove("prod").unwrap();
         assert!(matches!(reloaded.remove("prod"), Err(StoreError::NotFound(_))));
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();

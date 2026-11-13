@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::host::{Host, default_user};
+use crate::host::{AuthMethod, Host, default_user};
 
 /// 默认的配置文件位置。
 pub fn default_path() -> Option<PathBuf> {
@@ -95,6 +95,8 @@ fn flush(block: Option<Block>, hosts: &mut Vec<Host>) {
             user: block.user.clone().unwrap_or_else(default_user),
             identity_file: block.identity_file.clone(),
             group: Some("~/.ssh/config".to_string()),
+            auth: AuthMethod::Auto,
+            note: None,
         });
     }
 }
