@@ -26,6 +26,20 @@ nexsh 是用 Rust 编写、由 GPU 渲染界面的原生跨平台 SSH 客户端�
 - 不在代码或注释里写"抄自某项目"式的来源标注；如果确实采用了某个公开的算法或协议，
   注释里说明算法或协议本身即可。
 
+## 参考项目清单
+
+界面（布局、交互、视觉）四个项目都可以参考；源码能看到什么程度取决于许可证。
+
+| 项目 | 技术 | 许可证 | 源码 | 值得学的地方 |
+|---|---|---|---|---|
+| [stablyai/orca](https://github.com/stablyai/orca) | Electron + React，远端守护进程 | MIT | 可以读实现细节 | 远端 agent、帧协议、输出合批、流控、断线重连 |
+| [t8y2/motty](https://github.com/t8y2/motty) | Go，原生界面 | Apache-2.0 | 可以读实现细节 | 主机列表（分组、标签、颜色）、SFTP 原子写入与续传、转发、保险库、终端协议覆盖面 |
+| [Licoy/sshyard](https://github.com/Licoy/sshyard) | Go，原生界面 | AGPL-3.0 | **不读源码**，只看 README、文档、截图和实际行为 | 可停靠窗格、凭据存储的降级方案、主机导入 |
+| [since2006/shell-rs](https://github.com/since2006/shell-rs) | Rust + GPUI，与 nexsh 同一技术栈 | GPL-3.0 | **不读源码**，只看 README、文档、截图和实际行为 | 主机树 + 标签 + 右侧工具栏的整体布局、双栏 SFTP、转发示意图、状态栏 |
+
+shell-rs 和 nexsh 技术栈相同，最容易"顺手照着写"，也最需要守住这条线：
+它的 `src/`、`crates/` 不打开。需要了解 GPUI 的用法时看 GPUI 自己的源码和示例。
+
 ## 代码约定
 
 - 注释和面向用户的文字用中文；标识符用英文。
