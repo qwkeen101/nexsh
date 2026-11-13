@@ -70,12 +70,40 @@ pub fn describe_key(text: &str, passphrase: &str) -> String {
         Err(KeyProblem::WrongPassphrase) => {
             json!({ "ok": false, "field": "passphrase", "message": "口令不正确" })
         }
-        Err(KeyProblem::Invalid(_)) => json!({ "ok": false, "field": "key", "message": NOT_A_KEY }),
+        Err(KeyProblem::Invalid(_)) => json!({ "ok": false, "field": "key", "message": why_not_a_key(text) }),
     }
     .to_string()
 }
 
-const NOT_A_KEY: &str = "这不是能识别的私钥。需要的是私钥文件的完整内容（OpenSSH、PEM 或 PuTTY 格式），不是 .pub 公钥";
+/// 一段文字不能当私钥用时，说出具体差在哪里：拿错成公钥、复制时被截断、还是根本不是私钥。
+/// 只描述形状（标记、字符数），不把内容本身放进消息里。
+fn why_not_a_key(text: &str) -> String {
+    let trimmed = text.trim();
+    let size = trimmed.chars().count();
+    let public = ["ssh-", "ecdsa-", "sk-"].iter().any(|prefix| trimmed.starts_with(prefix))
+        || trimmed.contains("PUBLIC KEY-----");
+    if public {
+        return "这是公钥（.pub 文件的内容）。登录要用的是和它配对的私钥，通常是同名但不带 .pub 的那个文件".to_string();
+    }
+    let has_begin = trimmed.contains("-----BEGIN ");
+    let has_end = trimmed.contains("-----END ");
+    if has_begin && !has_end {
+        return format!(
+            "私钥不完整：有开头的 BEGIN 行，没有结尾的 END 行（收到 {size} 个字符）。复制时可能被截断了，请重新复制全部内容，或者改用「选择文件」"
+        );
+    }
+    if !has_begin && has_end {
+        return format!("私钥不完整：缺少开头的 BEGIN 行（收到 {size} 个字符）。请从第一行开始重新复制全部内容");
+    }
+    if has_begin {
+        return format!(
+            "私钥的标记完整，但中间的内容解析不了（收到 {size} 个字符）。可能复制时丢了或多了字符，请重新复制，或者改用「选择文件」"
+        );
+    }
+    format!(
+        "这不是私钥（收到 {size} 个字符，里面没有 BEGIN … PRIVATE KEY 这样的标记）。需要的是私钥文件的完整内容：OpenSSH、PEM 或 PuTTY 格式"
+    )
+}
 
 impl HostBook {
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -125,7 +153,7 @@ impl HostBook {
                     Err(KeyProblem::WrongPassphrase) => {
                         key_errors.push(("keyPassphrase", "口令不正确".to_string()));
                     }
-                    Err(KeyProblem::Invalid(_)) => key_errors.push(("key", NOT_A_KEY.to_string())),
+                    Err(KeyProblem::Invalid(_)) => key_errors.push(("key", why_not_a_key(&key))),
                 }
             } else if !has_key {
                 key_errors.push(("key", "请导入私钥".to_string()));
@@ -229,6 +257,25 @@ mod tests {
         assert_eq!(reply["ok"], false);
         assert_eq!(reply["field"], "key");
         assert!(reply["message"].as_str().unwrap().contains("公钥"));
+    }
+
+    #[test]
+    fn says_how_a_broken_key_is_broken() {
+        let message = |text: &str| {
+            let reply: Value = serde_json::from_str(&describe_key(text, "")).unwrap();
+            assert_eq!(reply["ok"], false);
+            reply["message"].as_str().unwrap().to_string()
+        };
+        // 复制时丢了后半截。
+        let cut = message("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA");
+        assert!(cut.contains("END") && cut.contains("47 个字符"), "{cut}");
+        // 丢了开头。
+        assert!(message("MIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----").contains("BEGIN"));
+        // 标记齐全，内容坏了；消息里不能带出内容本身。
+        let garbled = message("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----");
+        assert!(garbled.contains("解析不了") && !garbled.contains("MIIE"), "{garbled}");
+        // 随便一段文字。
+        assert!(message("ls -la").contains("6 个字符"));
     }
 
     #[test]

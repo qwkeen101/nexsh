@@ -154,9 +154,13 @@ adb shell input tap $((w - 126)) $((h - 220))
 sleep 2
 adb shell input tap 300 460
 sleep 1
-# 开头的 %s（空格）是为了不让 input 把 ----- 当成命令行选项。
-adb shell input text "%s$(tr '\n' ' ' < /tmp/nexsh_ci_rsa | sed 's/ *$//; s/ /%s/g')"
+# 一行一行地敲：整把私钥一次敲进去有一千七百多个按键事件，系统会中途丢弃后面的。
+# 每行开头的 %s（空格）既把各行隔开，也不让 input 把 ----- 当成命令行选项。
+while IFS= read -r line; do
+  adb shell input text "%s$(printf %s "$line" | sed 's/ /%s/g')" < /dev/null
+done < /tmp/nexsh_ci_rsa
 sleep 2
+shot m15b-pem-typed
 adb shell input keycombination 113 29
 adb shell input keycombination 113 31
 sleep 1
