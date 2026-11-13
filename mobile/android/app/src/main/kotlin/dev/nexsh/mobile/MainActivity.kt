@@ -1,7 +1,9 @@
 package dev.nexsh.mobile
 
 import android.os.Bundle
+import android.graphics.Color
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -35,7 +37,9 @@ object Sessions {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        // 界面只有深色一种，状态栏和导航栏的图标固定用浅色，不跟随系统的浅色模式。
+        val bars = SystemBarStyle.dark(Color.TRANSPARENT)
+        enableEdgeToEdge(statusBarStyle = bars, navigationBarStyle = bars)
         val startError = Bridge.start(filesDir.absolutePath)
         val secrets = Secrets(applicationContext)
         setContent {

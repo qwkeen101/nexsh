@@ -22,22 +22,27 @@ sleep 2
 shot m02-add
 
 # 地址和用户名：10.0.2.2 是模拟器眼里的宿主机，22 端口没人监听，连接会立刻被拒绝。
-adb shell input tap 300 370
+adb shell input tap 300 460
 sleep 1
 adb shell input text "10.0.2.2"
-adb shell input tap 300 585
+adb shell input tap 300 705
 sleep 1
 adb shell input text "root"
 sleep 1
 shot m03-filled
-adb shell input tap $((w - 90)) 137
+adb shell input tap $((w - 90)) 205
 sleep 2
 shot m04-saved
 
 # 列表里的第一台主机。
-adb shell input tap 400 440
+adb shell input tap 400 490
 sleep 5
 shot m05-terminal
+
+# 按键栏：点一下 Ctrl，再点终端唤出键盘。
+adb shell input tap 400 1200
+sleep 3
+shot m06-keyboard
 
 adb shell pidof dev.nexsh.mobile || echo "应用已经不在运行"
 adb logcat -d -t 400 "*:W" > shots/logcat.txt
