@@ -619,11 +619,6 @@ impl Render for HostForm {
         let editing = self.original.is_some();
         let probing = matches!(self.probe, Probe::Running(_));
 
-        let submit = |connect: bool, cx: &mut Context<Self>| {
-            cx.listener(move |this: &mut Self, _: &MouseDownEvent, window, cx| {
-                this.submit(connect, window, cx)
-            })
-        };
         let actions = div()
             .flex()
             .gap_2()
@@ -634,13 +629,22 @@ impl Render for HostForm {
             // 新建时主操作是"保存并连接"，只想存下来的用旁边的"保存"。
             .when(!editing, |actions| {
                 actions.child(
-                    button("保存", ButtonKind::Secondary)
-                        .on_mouse_down(MouseButton::Left, submit(false, cx)),
+                    button("保存", ButtonKind::Secondary).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                            this.submit(false, window, cx)
+                        }),
+                    ),
                 )
             })
             .child(
                 button(if editing { "保存" } else { "保存并连接" }, ButtonKind::Primary)
-                    .on_mouse_down(MouseButton::Left, submit(!editing, cx)),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                            this.submit(!editing, window, cx)
+                        }),
+                    ),
             );
 
         let card = div()

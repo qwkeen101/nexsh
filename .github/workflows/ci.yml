@@ -22,7 +22,30 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test
+      - name: Test
+        shell: bash
+        env:
+          # 日志要拿去匹配错误行，不带颜色控制符。
+          CARGO_TERM_COLOR: never
+        run: |
+          set -o pipefail
+          cargo test 2>&1 | tee test.log
+      # 失败时把错误内容输出成标注，不登录也能在任务页面和 API 里看到。
+      - name: Report test errors
+        if: failure()
+        shell: bash
+        run: |
+          report() {
+            local title="$1" body
+            body="$(cat)"
+            [ -z "$body" ] && return
+            body="${body//'%'/'%25'}"
+            body="${body//$'\r'/}"
+            body="${body//$'\n'/'%0A'}"
+            echo "::error title=${title}::${body}"
+          }
+          grep -n -E -A14 '^(error|Error|ERROR)|panicked at|^failures:' test.log | head -c 3500 | report "test errors (first)" || true
+          tail -n 40 test.log | tail -c 3500 | report "test log tail" || true
 
   # 桌面界面：编译发布版并上传可执行文件。
   app:

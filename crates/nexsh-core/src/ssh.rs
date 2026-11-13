@@ -24,6 +24,7 @@ const LATENCY_TIMEOUT: Duration = Duration::from_secs(4);
 /// 未被消费的事件上限，超过后对服务器施加背压。
 const EVENT_QUEUE_CAPACITY: usize = 256;
 /// 服务器通常在 6 次失败后断开（MaxAuthTries），给密钥文件和密码留出余量。
+#[cfg(unix)]
 const MAX_AGENT_KEYS: usize = 4;
 const TERM: &str = "xterm-256color";
 

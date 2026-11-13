@@ -138,7 +138,7 @@ mod tests {
         store.save().unwrap();
 
         let reloaded = HostStore::load(&path).unwrap();
-        assert_eq!(reloaded.hosts(), &[host]);
+        assert_eq!(reloaded.hosts(), &[host.clone()]);
 
         let mut reloaded = reloaded;
         let mut renamed = host.clone();
