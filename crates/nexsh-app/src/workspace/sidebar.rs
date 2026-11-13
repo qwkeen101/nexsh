@@ -1,6 +1,8 @@
 //! 侧栏：搜索框、主机树和右键菜单。
 
-use gpui::{Context, Div, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb, rgba};
+use gpui::{
+    Context, Div, Focusable, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb, rgba,
+};
 use nexsh_core::tree::{self, Row};
 
 use super::{MenuTarget, Workspace, dot, state_color, state_rank};
