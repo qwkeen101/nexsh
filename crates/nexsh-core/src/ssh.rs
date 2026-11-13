@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
-use russh::{ChannelMsg, Disconnect, client};
+use russh::{ChannelMsg, Disconnect, Preferred, cipher, client, kex, mac};
 use tokio::sync::mpsc;
 
 use crate::host::{AuthMethod, Host};
@@ -173,7 +173,9 @@ fn decode_key(text: &str, passphrase: Option<&str>) -> Result<keys::PrivateKey, 
         && clean.lines().any(|line| {
             line.strip_prefix("Encryption:").is_some_and(|value| value.trim() != "none")
         });
-    if putty_encrypted && passphrase.is_none() {
+    // 加密的 PKCS#8 同理：解析器在没有口令时不说"需要口令"，而是报内容错误。
+    let pkcs8_encrypted = clean.contains("-----BEGIN ENCRYPTED PRIVATE KEY-----");
+    if (putty_encrypted || pkcs8_encrypted) && passphrase.is_none() {
         return Err(keys::Error::KeyIsEncrypted);
     }
     keys::decode_secret_key(&clean, passphrase)
@@ -394,6 +396,39 @@ async fn with_saved_secrets(mut options: ConnectOptions) -> ConnectOptions {
     options
 }
 
+/// 协商时提出的算法。russh 默认只给现代的那几种，老一些的服务器（旧版 OpenSSH、嵌入式
+/// Dropbear、交换机路由器）和它没有交集，握手直接失败。这里把 OpenSSH 客户端仍然支持的
+/// 较老算法补在后面：排在最后，只有服务器拿不出更好的才会用到，新服务器的选择不受影响。
+fn preferred_algorithms() -> Preferred {
+    let mut preferred = Preferred::DEFAULT;
+
+    // 密钥交换列表末尾是几个扩展标记，不是真正的算法；老算法插在它们前面。
+    let mut exchanges = preferred.kex.to_vec();
+    let markers = exchanges
+        .iter()
+        .position(|name| *name == kex::EXTENSION_SUPPORT_AS_CLIENT)
+        .unwrap_or(exchanges.len());
+    let older = [
+        kex::ECDH_SHA2_NISTP256,
+        kex::ECDH_SHA2_NISTP384,
+        kex::ECDH_SHA2_NISTP521,
+        kex::DH_GEX_SHA1,
+        kex::DH_G14_SHA1,
+    ];
+    exchanges.splice(markers..markers, older);
+    preferred.kex = exchanges.into();
+
+    let mut ciphers = preferred.cipher.to_vec();
+    ciphers.extend([cipher::AES_128_GCM, cipher::AES_256_CBC, cipher::AES_192_CBC, cipher::AES_128_CBC]);
+    preferred.cipher = ciphers.into();
+
+    let mut macs = preferred.mac.to_vec();
+    macs.extend([mac::HMAC_SHA1_ETM, mac::HMAC_SHA1]);
+    preferred.mac = macs.into();
+
+    preferred
+}
+
 /// 建立连接、校验主机密钥并完成认证。返回连接，以及首次见到这台主机时它的密钥指纹。
 async fn establish(
     options: ConnectOptions,
@@ -407,6 +442,7 @@ async fn establish(
         keepalive_max: 3,
         // 关闭 Nagle：交互式终端里每个按键都应立刻发出。
         nodelay: true,
+        preferred: preferred_algorithms(),
         ..Default::default()
     });
     let report = Arc::new(Mutex::new(HostKeyReport::default()));
@@ -659,6 +695,24 @@ async fn try_agent(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn older_algorithms_come_after_the_modern_ones() {
+        let preferred = preferred_algorithms();
+        let place = |name: kex::Name| preferred.kex.iter().position(|item| *item == name).unwrap();
+        assert!(place(kex::CURVE25519) < place(kex::DH_G14_SHA1));
+        // 扩展标记仍然在最后，老算法没有排到它们后面去。
+        assert!(place(kex::DH_G14_SHA1) < place(kex::EXTENSION_SUPPORT_AS_CLIENT));
+        assert_eq!(preferred.cipher.first(), Preferred::DEFAULT.cipher.first());
+        assert!(preferred.cipher.contains(&cipher::AES_128_CBC));
+        assert_eq!(preferred.mac.last(), Some(&mac::HMAC_SHA1));
+    }
+
+    #[test]
+    fn an_encrypted_pkcs8_key_asks_for_its_passphrase() {
+        let text = "-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFLTBXBgkqhkiG9w0BBQ0wSjApBgkqhkiG9w0BBQww\n-----END ENCRYPTED PRIVATE KEY-----\n";
+        assert_eq!(inspect_key(text, None), Err(KeyProblem::Encrypted));
+    }
 
     // 专为测试生成的密钥，没有在任何服务器上授权过。
     const PLAIN_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\

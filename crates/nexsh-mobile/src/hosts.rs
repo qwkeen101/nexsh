@@ -85,6 +85,10 @@ fn why_not_a_key(text: &str) -> String {
     if public {
         return "这是公钥（.pub 文件的内容）。登录要用的是和它配对的私钥，通常是同名但不带 .pub 的那个文件".to_string();
     }
+    // 旧式 PEM 加密里只有 AES-128-CBC 能解；其余的（AES-256、3DES）说清楚怎么转换，而不是说它坏了。
+    if trimmed.contains("DEK-Info:") && !trimmed.contains("DEK-Info: AES-128-CBC") {
+        return "这把私钥用的是旧式的加密方式，这里解不了。在电脑上运行 ssh-keygen -p -f 私钥文件 重新保存一次（口令可以不变），再导入新的内容".to_string();
+    }
     let has_begin = trimmed.contains("-----BEGIN ");
     let has_end = trimmed.contains("-----END ");
     if has_begin && !has_end {
