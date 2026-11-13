@@ -12,7 +12,7 @@ exclude = ["vendor"]
 default-members = ["crates/nexsh-core", "crates/nexsh-term", "crates/nexsh-cli"]
 
 [workspace.package]
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 rust-version = "1.89"
 publish = false

@@ -349,16 +349,16 @@ impl Render for TextInput {
             theme::BORDER
         };
 
-        let frame = div().h(px(30.)).w_full().flex().items_center();
+        let frame = div().h(px(32.)).w_full().flex().items_center();
         let frame = if self.bare {
             frame
         } else {
             frame
-                .px_2()
+                .px(px(10.))
                 .bg(rgb(theme::INPUT_BG))
                 .border_1()
                 .border_color(rgb(border))
-                .rounded_sm()
+                .rounded(px(theme::RADIUS_CONTROL))
         };
         frame
             .track_focus(&self.focus_handle)

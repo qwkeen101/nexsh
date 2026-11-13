@@ -485,13 +485,15 @@ impl Render for TerminalView {
         }
         let prompt = self.prompt.as_ref().map(|prompt| {
             div()
-                .px_2()
-                .py_2()
+                .px_4()
+                .py_3()
                 .flex()
                 .flex_col()
-                .gap_1()
+                .gap_2()
                 .flex_shrink_0()
                 .bg(rgb(theme::SIDEBAR_BG))
+                .border_b_1()
+                .border_color(rgb(theme::BORDER))
                 .text_color(rgb(theme::NOTICE))
                 .child(prompt.message.clone())
                 .child(
@@ -520,23 +522,29 @@ impl Render for TerminalView {
             .when_some(banner, |element, (text, color)| {
                 element.child(
                     div()
-                        .px_2()
-                        .py_1()
+                        .px_4()
+                        .py(px(6.))
                         .flex_shrink_0()
+                        .text_size(px(12.))
                         .bg(rgb(theme::SIDEBAR_BG))
+                        .border_b_1()
+                        .border_color(rgb(theme::BORDER))
                         .text_color(rgb(color))
                         .child(text),
                 )
             })
+            // 文字不贴着窗口边：四周留一圈和终端背景同色的空白。
             .child(
-                canvas(
-                    move |bounds, window, cx| layout_terminal(&layout_view, bounds, window, cx),
-                    move |bounds, layout, window, cx| {
-                        paint_terminal(&paint_view, &focus_handle, bounds, layout, window, cx)
-                    },
-                )
-                .flex_1()
-                .w_full(),
+                div().flex_1().min_h_0().w_full().px(px(10.)).py(px(8.)).flex().flex_col().child(
+                    canvas(
+                        move |bounds, window, cx| layout_terminal(&layout_view, bounds, window, cx),
+                        move |bounds, layout, window, cx| {
+                            paint_terminal(&paint_view, &focus_handle, bounds, layout, window, cx)
+                        },
+                    )
+                    .flex_1()
+                    .w_full(),
+                ),
             )
     }
 }

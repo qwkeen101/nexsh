@@ -4,8 +4,8 @@
 //! `nexsh_core::draft` 里，保存到哪里由打开对话框的一方决定（见 [`HostFormEvent`]）。
 
 use gpui::{
-    Context, Div, Entity, EventEmitter, FocusHandle, Focusable, KeyDownEvent, MouseButton,
-    MouseDownEvent, SharedString, Task, Window, div, prelude::*, px, rgb, rgba,
+    Context, Div, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, KeyDownEvent,
+    MouseButton, MouseDownEvent, SharedString, Task, Window, div, prelude::*, px, rgb, rgba,
 };
 use nexsh_core::secrets::{self, SecretKind};
 use nexsh_core::{
@@ -409,8 +409,8 @@ impl HostForm {
             .min_w_0()
             .flex()
             .flex_col()
-            .gap_1()
-            .child(div().text_color(rgb(theme::TEXT_MUTED)).child(label))
+            .gap(px(6.))
+            .child(div().text_size(px(12.)).text_color(rgb(theme::TEXT_MUTED)).child(label))
             .child(input.clone())
             .children(error.map(|message| {
                 div().text_xs().text_color(rgb(theme::ERROR)).child(message)
@@ -427,13 +427,17 @@ impl HostForm {
             let selected = self.auth == method;
             div()
                 .flex_1()
-                .py_1()
+                .h(px(26.))
                 .flex()
+                .items_center()
                 .justify_center()
-                .rounded_sm()
+                .rounded(px(5.))
                 .cursor_pointer()
                 .when(selected, |segment| {
-                    segment.bg(rgb(theme::HOVER_BG)).text_color(rgb(theme::TEXT))
+                    segment
+                        .bg(rgb(theme::SELECTED_BG))
+                        .text_color(rgb(theme::TEXT))
+                        .font_weight(FontWeight::MEDIUM)
                 })
                 .when(!selected, |segment| {
                     segment
@@ -473,19 +477,19 @@ impl HostForm {
             .flex()
             .flex_col()
             .gap_2()
-            .child(div().text_color(rgb(theme::TEXT_MUTED)).child("认证方式"))
+            .child(div().text_size(px(12.)).text_color(rgb(theme::TEXT_MUTED)).child("认证方式"))
             .child(
                 div()
-                    .p_0p5()
+                    .p(px(3.))
                     .flex()
                     .gap_1()
-                    .rounded_sm()
+                    .rounded(px(theme::RADIUS_CONTROL))
                     .bg(rgb(theme::INPUT_BG))
                     .border_1()
                     .border_color(rgb(theme::BORDER))
                     .children(segments),
             )
-            .child(div().text_xs().text_color(rgb(theme::TEXT_MUTED)).child(explanation));
+            .child(div().text_size(px(11.5)).text_color(rgb(theme::TEXT_FAINT)).child(explanation));
         match self.auth {
             AuthMethod::Auto => section,
             AuthMethod::Password => section
@@ -512,8 +516,9 @@ impl HostForm {
             .map(|group| {
                 let name = group.clone();
                 div()
-                    .px_2()
-                    .rounded_sm()
+                    .px(px(10.))
+                    .py(px(2.))
+                    .rounded_full()
                     .cursor_pointer()
                     .text_xs()
                     .text_color(rgb(theme::TEXT_MUTED))
@@ -588,11 +593,13 @@ enum ButtonKind {
 /// 按钮不随对话框变窄而压缩或换行。
 fn button(label: impl Into<SharedString>, kind: ButtonKind) -> Div {
     let button = div()
-        .px_3()
-        .py_1()
+        .h(px(30.))
+        .px(px(14.))
+        .flex()
         .flex_shrink_0()
+        .items_center()
         .whitespace_nowrap()
-        .rounded_sm()
+        .rounded(px(theme::RADIUS_CONTROL))
         .cursor_pointer()
         .border_1()
         .child(label.into());
@@ -600,7 +607,8 @@ fn button(label: impl Into<SharedString>, kind: ButtonKind) -> Div {
         ButtonKind::Primary => button
             .bg(rgb(theme::ACCENT))
             .border_color(rgb(theme::ACCENT))
-            .text_color(rgb(theme::WINDOW_BG))
+            .text_color(rgb(0x0b1220))
+            .font_weight(FontWeight::MEDIUM)
             .hover(|style| style.opacity(0.9)),
         ButtonKind::Secondary => button
             .border_color(rgb(theme::BORDER))
@@ -659,19 +667,26 @@ impl Render for HostForm {
             // 窗口比对话框矮时，对话框内部滚动，按钮始终够得着。
             .max_h_full()
             .overflow_y_scroll()
-            .p_5()
+            .p_6()
             .flex()
             .flex_col()
-            .gap_3()
-            .bg(rgb(theme::SIDEBAR_BG))
+            .gap(px(14.))
+            .bg(rgb(theme::SURFACE))
             .border_1()
             .border_color(rgb(theme::BORDER))
-            .rounded_md()
-            .child(div().text_size(px(15.)).child(if editing { "编辑主机" } else { "添加主机" }))
+            .rounded(px(theme::RADIUS_DIALOG))
+            .shadow_lg()
+            .child(
+                div()
+                    .pb_1()
+                    .text_size(px(16.))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(if editing { "编辑主机" } else { "添加主机" }),
+            )
             .child(
                 div()
                     .flex()
-                    .gap_2()
+                    .gap_3()
                     .child(
                         self.field("地址", &self.address, Some(Field::Address)).flex_1(),
                     )
@@ -680,7 +695,7 @@ impl Render for HostForm {
             .child(
                 div()
                     .flex()
-                    .gap_2()
+                    .gap_3()
                     .child(self.field("用户名", &self.user, Some(Field::User)).flex_1())
                     .child(self.field("名称", &self.name, Some(Field::Name)).flex_1()),
             )
@@ -693,11 +708,14 @@ impl Render for HostForm {
             }))
             .child(
                 div()
-                    .pt_1()
+                    .mt_1()
+                    .pt_4()
                     .flex()
                     .items_center()
                     .justify_between()
                     .gap_2()
+                    .border_t_1()
+                    .border_color(rgb(theme::BORDER))
                     .child(
                         button(if probing { "取消测试" } else { "测试连接" }, ButtonKind::Secondary)
                             .on_mouse_down(

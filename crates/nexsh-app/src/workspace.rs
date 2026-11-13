@@ -370,17 +370,21 @@ impl Workspace {
             let title = view.read(cx).tab_title();
             let state = view.read(cx).state();
             let text_color = if active { theme::TEXT } else { theme::TEXT_MUTED };
+            // 标签是悬在栏里的圆角块：当前的那个填实，其余的只在悬停时显形。
             div()
+                .group("tab")
+                .h(px(28.))
+                .pl(px(10.))
+                .pr(px(6.))
                 .flex()
+                .flex_shrink_0()
                 .items_center()
                 .gap_2()
-                .px_3()
-                .h_full()
+                .rounded(px(theme::RADIUS_ITEM))
                 .cursor_pointer()
                 .text_color(rgb(text_color))
-                .border_r_1()
-                .border_color(rgb(theme::BORDER))
-                .when(active, |tab| tab.bg(rgb(theme::WINDOW_BG)))
+                .when(active, |tab| tab.bg(rgb(theme::SELECTED_BG)))
+                .when(!active, |tab| tab.hover(|style| style.bg(rgb(theme::HOVER_BG))))
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(move |this, _: &MouseDownEvent, window, cx| {
@@ -388,12 +392,21 @@ impl Workspace {
                     }),
                 )
                 .child(dot(Some(state_color(state))))
-                .child(title)
+                .child(div().max_w(px(180.)).truncate().child(title))
                 .child(
                     div()
-                        .p_0p5()
-                        .rounded_sm()
-                        .hover(|style| style.bg(rgb(theme::HOVER_BG)))
+                        .w(px(18.))
+                        .h(px(18.))
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(4.))
+                        // 关闭按钮在当前标签上常显，其余标签悬停时才出现，栏里不至于满是叉。
+                        .when(!active, |close| {
+                            close.opacity(0.).group_hover("tab", |style| style.opacity(1.))
+                        })
+                        .hover(|style| style.bg(rgb(theme::BORDER)))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(move |this, _: &MouseDownEvent, window, cx| {
@@ -407,15 +420,15 @@ impl Workspace {
         });
 
         let sidebar_toggle = div()
-            .w(px(34.))
-            .h_full()
+            .w(px(28.))
+            .h(px(28.))
+            .mr_1()
             .flex()
             .flex_shrink_0()
             .items_center()
             .justify_center()
+            .rounded(px(theme::RADIUS_ITEM))
             .cursor_pointer()
-            .border_r_1()
-            .border_color(rgb(theme::BORDER))
             .hover(|style| style.bg(rgb(theme::HOVER_BG)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -424,10 +437,15 @@ impl Workspace {
             .child(icon(Icon::Sidebar, 15., theme::TEXT_MUTED));
 
         div()
-            .h(px(34.))
+            .h(px(theme::BAR_HEIGHT))
             .w_full()
+            .px_2()
             .flex()
             .flex_shrink_0()
+            .items_center()
+            .gap_1()
+            // 标签多到放不下时裁掉，不把窗口撑宽。
+            .overflow_hidden()
             .bg(rgb(theme::SIDEBAR_BG))
             .border_b_1()
             .border_color(rgb(theme::BORDER))
@@ -445,7 +463,7 @@ impl Workspace {
             .flex_shrink_0()
             .items_center()
             .gap_2()
-            .text_xs()
+            .text_size(px(11.5))
             .text_color(rgb(theme::TEXT_MUTED))
             .bg(rgb(theme::SIDEBAR_BG))
             .border_t_1()
@@ -531,9 +549,12 @@ impl Render for Workspace {
                 .min_h_0()
                 .w_full()
                 .flex()
+                .flex_col()
                 .items_center()
                 .justify_center()
-                .text_color(rgb(theme::TEXT_MUTED))
+                .gap_3()
+                .text_color(rgb(theme::TEXT_FAINT))
+                .child(icon(Icon::Terminal, 40., theme::BORDER))
                 .child("从左侧选择一台主机开始连接"),
         };
 

@@ -1,7 +1,8 @@
 //! 侧栏：搜索框、主机树和右键菜单。
 
 use gpui::{
-    Context, Div, Focusable, MouseButton, MouseDownEvent, Window, div, prelude::*, px, rgb, rgba,
+    Context, Div, Focusable, FontWeight, MouseButton, MouseDownEvent, Window, div, prelude::*, px,
+    rgb, rgba,
 };
 use nexsh_core::tree::{self, Row};
 
@@ -10,12 +11,14 @@ use crate::icons::{Icon, icon};
 use crate::terminal_view::SessionState;
 use crate::theme;
 
-const SIDEBAR_WIDTH: f32 = 248.;
-const ROW_HEIGHT: f32 = 30.;
+const SIDEBAR_WIDTH: f32 = 264.;
+const ROW_HEIGHT: f32 = 32.;
+/// 分组行比主机行矮一点、字小一号，读起来是标题而不是又一台主机。
+const GROUP_HEIGHT: f32 = 28.;
 /// 每深一级缩进多少。
 const INDENT: f32 = 14.;
-const MENU_WIDTH: f32 = 196.;
-const MENU_ITEM_HEIGHT: f32 = 28.;
+const MENU_WIDTH: f32 = 208.;
+const MENU_ITEM_HEIGHT: f32 = 30.;
 
 /// 头像的底色，按主机名固定选一种：同一台主机每次都是同一个颜色，扫一眼就能认出来。
 const AVATAR_COLORS: [u32; 8] =
@@ -30,22 +33,23 @@ fn avatar(name: &str) -> Div {
         .map(|ch| ch.to_uppercase().to_string())
         .unwrap_or_else(|| "?".to_string());
     div()
-        .w(px(20.))
-        .h(px(20.))
+        .w(px(22.))
+        .h(px(22.))
         .flex()
         .flex_shrink_0()
         .items_center()
         .justify_center()
-        .rounded_sm()
+        .rounded(px(theme::RADIUS_ITEM))
         // 同一个颜色的淡底配实色字。
-        .bg(rgba((color << 8) | 0x38))
+        .bg(rgba((color << 8) | 0x2e))
         .text_color(rgb(color))
         .text_size(px(11.))
+        .font_weight(FontWeight::SEMIBOLD)
         .child(letter)
 }
 
 fn indent(depth: usize) -> gpui::Pixels {
-    px(8. + depth as f32 * INDENT)
+    px(6. + depth as f32 * INDENT)
 }
 
 impl Workspace {
@@ -72,15 +76,17 @@ impl Workspace {
         let menu_path = path.to_string();
         let chevron = if collapsed { Icon::ChevronRight } else { Icon::ChevronDown };
         div()
-            .mx_1()
-            .h(px(ROW_HEIGHT))
+            .mx_2()
+            .h(px(GROUP_HEIGHT))
             .pl(indent(depth))
             .pr_2()
             .flex()
             .items_center()
             .gap_1()
-            .rounded_sm()
+            .rounded(px(theme::RADIUS_ITEM))
             .cursor_pointer()
+            .text_size(px(12.))
+            .font_weight(FontWeight::MEDIUM)
             .text_color(rgb(theme::TEXT_MUTED))
             .hover(|style| style.bg(rgb(theme::HOVER_BG)).text_color(rgb(theme::TEXT)))
             .on_mouse_down(
@@ -95,10 +101,15 @@ impl Workspace {
                     this.open_menu(MenuTarget::Group(menu_path.clone()), event.position, cx)
                 }),
             )
-            .child(icon(chevron, 12., theme::TEXT_MUTED))
-            .child(icon(Icon::Folder, 14., theme::TEXT_MUTED))
-            .child(div().ml_1().flex_1().min_w_0().truncate().child(name.to_string()))
-            .child(div().text_xs().child(count.to_string()))
+            .child(icon(chevron, 12., theme::TEXT_FAINT))
+            .child(div().flex_1().min_w_0().truncate().child(name.to_string()))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::NORMAL)
+                    .text_color(rgb(theme::TEXT_FAINT))
+                    .child(count.to_string()),
+            )
     }
 
     fn host_row(&self, index: usize, depth: usize, highlighted: bool, cx: &mut Context<Self>) -> Div {
@@ -108,18 +119,18 @@ impl Workspace {
         let target = host.clone();
         div()
             .group("host-row")
-            .mx_1()
+            .mx_2()
             .h(px(ROW_HEIGHT))
-            // 主机比同级的分组多缩进一个箭头的宽度，头像和分组的文件夹图标对齐。
-            .pl(indent(depth) + px(16.))
+            // 分组里的主机缩进一个箭头的宽度，头像和分组名对齐；不在分组里的贴左边。
+            .pl(indent(depth) + px(if depth == 0 { 0. } else { 2. }))
             .pr_1()
             .flex()
             .items_center()
             .gap_2()
-            .rounded_sm()
+            .rounded(px(theme::RADIUS_ITEM))
             .cursor_pointer()
-            .when(highlighted, |row| row.bg(rgb(theme::HOVER_BG)))
-            .hover(|style| style.bg(rgb(theme::HOVER_BG)))
+            .when(highlighted, |row| row.bg(rgb(theme::SELECTED_BG)))
+            .when(!highlighted, |row| row.hover(|style| style.bg(rgb(theme::HOVER_BG))))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _: &MouseDownEvent, window, cx| {
@@ -140,19 +151,24 @@ impl Workspace {
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_xs()
-                    .text_color(rgb(theme::TEXT_MUTED))
+                    .text_size(px(11.5))
+                    .text_color(rgb(theme::TEXT_FAINT))
                     .when(address != host.name, |element| element.child(address)),
             )
             .children(state.map(|state| dot(Some(state_color(state)))))
             // "更多"按钮只在鼠标移到这一行时出现，打开的菜单和右键是同一个。
             .child(
                 div()
-                    .p_0p5()
-                    .rounded_sm()
+                    .w(px(22.))
+                    .h(px(22.))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(theme::RADIUS_ITEM))
                     .opacity(0.)
                     .group_hover("host-row", |style| style.opacity(1.))
-                    .hover(|style| style.bg(rgb(theme::BORDER)))
+                    .hover(|style| style.bg(rgb(theme::SELECTED_BG)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _window, cx| {
@@ -179,13 +195,13 @@ impl Workspace {
             let label = format!("连接 {}", target.address());
             elements.push(
                 div()
-                    .mx_1()
+                    .mx_2()
                     .h(px(ROW_HEIGHT))
                     .px_2()
                     .flex()
                     .items_center()
                     .gap_2()
-                    .rounded_sm()
+                    .rounded(px(theme::RADIUS_ITEM))
                     .cursor_pointer()
                     .text_color(rgb(theme::ACCENT))
                     .hover(|style| style.bg(rgb(theme::HOVER_BG)))
@@ -200,7 +216,7 @@ impl Workspace {
                     .child(div().flex_1().min_w_0().truncate().child(label))
                     // 有匹配的主机时回车打开的是选中的那台，这一行要用鼠标点。
                     .when(visible_count == 0, |row| {
-                        row.child(div().text_xs().text_color(rgb(theme::TEXT_MUTED)).child("回车"))
+                        row.child(div().text_size(px(11.)).text_color(rgb(theme::TEXT_FAINT)).child("回车"))
                     }),
             );
         }
@@ -227,15 +243,19 @@ impl Workspace {
 
         // 列表为空时不放说明文字，留白即可；只有搜不到东西时才提示。
         let hint = (searching && elements.is_empty()).then(|| {
-            div().px_3().py_2().text_color(rgb(theme::TEXT_MUTED)).child("没有匹配的主机")
+            div().px_4().py_2().text_size(px(12.)).text_color(rgb(theme::TEXT_FAINT)).child("没有匹配的主机")
         });
         let error = self.error.clone().map(|message| {
-            div().px_3().py_2().text_color(rgb(theme::ERROR)).child(message)
+            div().px_4().py_2().text_size(px(12.)).text_color(rgb(theme::ERROR)).child(message)
         });
         let add_button = self.store.is_some().then(|| {
             div()
-                .p_1()
-                .rounded_sm()
+                .w(px(26.))
+                .h(px(26.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(theme::RADIUS_ITEM))
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(theme::HOVER_BG)))
                 .on_mouse_down(
@@ -244,7 +264,7 @@ impl Workspace {
                         this.open_form(None, None, window, cx)
                     }),
                 )
-                .child(icon(Icon::Plus, 15., theme::TEXT))
+                .child(icon(Icon::Plus, 15., theme::TEXT_MUTED))
         });
         let search_border = if search_focused { theme::ACCENT } else { theme::BORDER };
         let summary = if searching {
@@ -264,30 +284,31 @@ impl Workspace {
             .border_color(rgb(theme::BORDER))
             .child(
                 div()
-                    .h(px(34.))
-                    .pl_3()
+                    .h(px(theme::BAR_HEIGHT))
+                    .pl_4()
                     .pr_2()
                     .flex()
                     .flex_shrink_0()
                     .items_center()
                     .justify_between()
-                    .child("主机")
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("主机"))
                     .children(add_button),
             )
             .child(
                 div()
-                    .mx_2()
+                    .mx_3()
+                    .mt_1()
                     .mb_2()
-                    .px_2()
+                    .px(px(10.))
                     .flex()
                     .flex_shrink_0()
                     .items_center()
                     .gap_2()
-                    .rounded_sm()
+                    .rounded(px(theme::RADIUS_CONTROL))
                     .bg(rgb(theme::INPUT_BG))
                     .border_1()
                     .border_color(rgb(search_border))
-                    .child(icon(Icon::Search, 14., theme::TEXT_MUTED))
+                    .child(icon(Icon::Search, 14., theme::TEXT_FAINT))
                     .child(div().flex_1().min_w_0().child(self.search.clone())),
             )
             .children(error)
@@ -296,14 +317,12 @@ impl Workspace {
             .child(
                 div()
                     .h(px(24.))
-                    .px_3()
+                    .px_4()
                     .flex()
                     .flex_shrink_0()
                     .items_center()
-                    .text_xs()
-                    .text_color(rgb(theme::TEXT_MUTED))
-                    .border_t_1()
-                    .border_color(rgb(theme::BORDER))
+                    .text_size(px(11.))
+                    .text_color(rgb(theme::TEXT_FAINT))
                     .child(summary),
             )
     }
@@ -316,14 +335,14 @@ impl Workspace {
             div()
                 .mx_1()
                 .h(px(MENU_ITEM_HEIGHT))
-                .px_2()
+                .px(px(10.))
                 .flex()
                 .items_center()
-                .gap_2()
-                .rounded_sm()
+                .gap(px(10.))
+                .rounded(px(theme::RADIUS_ITEM))
                 .cursor_pointer()
                 .text_color(rgb(color))
-                .hover(|style| style.bg(rgb(theme::HOVER_BG)))
+                .hover(|style| style.bg(rgb(theme::SELECTED_BG)))
                 .child(icon(kind, 14., if danger { theme::ERROR } else { theme::TEXT_MUTED }))
                 .child(label.to_string())
         };
@@ -440,10 +459,11 @@ impl Workspace {
                         .py_1()
                         .flex()
                         .flex_col()
-                        .bg(rgb(theme::SIDEBAR_BG))
+                        .bg(rgb(theme::SURFACE))
                         .border_1()
                         .border_color(rgb(theme::BORDER))
-                        .rounded_md()
+                        .rounded(px(theme::RADIUS_MENU))
+                        .shadow_lg()
                         .children(items),
                 ),
         )
