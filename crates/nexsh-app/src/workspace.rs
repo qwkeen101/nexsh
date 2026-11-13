@@ -1,14 +1,15 @@
 //! 主窗口：左侧主机列表，右侧标签页和终端。
 
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use gpui::{
     Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton, MouseDownEvent, Window,
     div, prelude::*, px, rgb, rgba,
 };
-use nexsh_core::{Host, HostStore, ssh_config};
+use nexsh_core::{Host, HostStore, LatencyLevel, search, ssh_config};
 
-use crate::terminal_view::TerminalView;
+use crate::terminal_view::{SessionState, TerminalView};
 use crate::text_input::TextInput;
 use crate::theme;
 
@@ -16,13 +17,24 @@ use crate::theme;
 struct HostForm {
     name: Entity<TextInput>,
     target: Entity<TextInput>,
+    group: Entity<TextInput>,
     identity_file: Entity<TextInput>,
     error: Option<String>,
 }
 
+/// 侧栏里的一个分组，`hosts` 是 `Workspace::hosts` 的下标。
+struct Section {
+    title: String,
+    hosts: Vec<usize>,
+}
+
+/// 没有填分组的已保存主机归在这里。
+const UNGROUPED: &str = "未分组";
+
 impl HostForm {
-    fn inputs(&self) -> [&Entity<TextInput>; 3] {
-        [&self.name, &self.target, &self.identity_file]
+    /// 按对话框里从上到下的顺序，Tab 依此切换。
+    fn inputs(&self) -> [&Entity<TextInput>; 4] {
+        [&self.target, &self.name, &self.group, &self.identity_file]
     }
 }
 
@@ -37,6 +49,10 @@ pub struct Workspace {
     saved_count: usize,
     /// 读写主机列表失败时显示在侧栏里。
     error: Option<String>,
+    /// 侧栏顶部的搜索框，也用来输入地址直接连接。
+    search: Entity<TextInput>,
+    /// 被折叠的分组（按标题）。搜索时不生效：有匹配的分组总是展开。
+    collapsed: HashSet<String>,
     form: Option<HostForm>,
     tabs: Vec<Entity<TerminalView>>,
     active: usize,
@@ -50,8 +66,13 @@ impl Workspace {
         };
         let config_hosts =
             ssh_config::default_path().map(|path| ssh_config::load(&path)).unwrap_or_default();
+        let search = cx.new(|cx| TextInput::new("搜索，或输入 user@host 连接", cx));
+        // 搜索框内容变化时重新筛选列表。
+        cx.observe(&search, |_, _, cx| cx.notify()).detach();
         let mut workspace = Self {
             focus_handle: cx.focus_handle(),
+            search,
+            collapsed: HashSet::new(),
             store,
             config_hosts,
             hosts: Vec::new(),
@@ -78,8 +99,55 @@ impl Workspace {
         self.hosts = hosts;
     }
 
-    fn open_host(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(host) = self.hosts.get(index).cloned() else { return };
+    /// 当前查询下要显示的分组，保持主机原有的先后顺序。
+    fn sections(&self, query: &str) -> Vec<Section> {
+        let mut sections: Vec<Section> = Vec::new();
+        for (index, host) in self.hosts.iter().enumerate() {
+            if !search::matches(host, query) {
+                continue;
+            }
+            let title = host.group.as_deref().unwrap_or(UNGROUPED);
+            match sections.iter_mut().find(|section| section.title == title) {
+                Some(section) => section.hosts.push(index),
+                None => sections.push(Section { title: title.to_string(), hosts: vec![index] }),
+            }
+        }
+        sections
+    }
+
+    /// 查询能解析成一个地址、且列表里没有这个地址时，可以直接连接它。
+    fn quick_target(&self, query: &str) -> Option<Host> {
+        let target = search::quick_target(query)?;
+        let address = target.address();
+        (!self.hosts.iter().any(|host| host.address() == address)).then_some(target)
+    }
+
+    /// 在搜索框里按回车：优先打开第一台匹配的主机，没有匹配就把输入当作地址连接。
+    fn submit_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.search.read(cx).text().trim().to_string();
+        if query.is_empty() {
+            return;
+        }
+        let first_match =
+            self.sections(&query).first().and_then(|section| section.hosts.first().copied());
+        let host = match first_match {
+            Some(index) => self.hosts.get(index).cloned(),
+            None => self.quick_target(&query),
+        };
+        if let Some(host) = host {
+            self.search.update(cx, |input, cx| input.clear(cx));
+            self.open_host(host, window, cx);
+        }
+    }
+
+    fn toggle_section(&mut self, title: &str, cx: &mut Context<Self>) {
+        if !self.collapsed.remove(title) {
+            self.collapsed.insert(title.to_string());
+        }
+        cx.notify();
+    }
+
+    fn open_host(&mut self, host: Host, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.new(|cx| TerminalView::new(host, cx));
         // 终端标题变化时重绘标签栏。
         cx.observe(&view, |_, _, cx| cx.notify()).detach();
@@ -108,10 +176,11 @@ impl Workspace {
         }
         let name = cx.new(|cx| TextInput::new("可留空，默认用地址", cx));
         let target = cx.new(|cx| TextInput::new("user@host 或 user@host:端口", cx));
+        let group = cx.new(|cx| TextInput::new("可留空，例如 生产环境", cx));
         let identity_file = cx.new(|cx| TextInput::new("可留空，例如 ~/.ssh/id_ed25519", cx));
         let first = target.read(cx).focus_handle(cx);
         window.focus(&first);
-        self.form = Some(HostForm { name, target, identity_file, error: None });
+        self.form = Some(HostForm { name, target, group, identity_file, error: None });
         cx.notify();
     }
 
@@ -125,9 +194,10 @@ impl Workspace {
         let Some(form) = self.form.as_ref() else { return };
         let name = form.name.read(cx).text().trim().to_string();
         let target = form.target.read(cx).text().trim().to_string();
+        let group = form.group.read(cx).text().trim().to_string();
         let identity_file = form.identity_file.read(cx).text().trim().to_string();
 
-        let result = self.add_host(&name, &target, &identity_file);
+        let result = self.add_host(&name, &target, &group, &identity_file);
         match result {
             Ok(()) => {
                 self.error = None;
@@ -143,7 +213,13 @@ impl Workspace {
         }
     }
 
-    fn add_host(&mut self, name: &str, target: &str, identity_file: &str) -> Result<(), String> {
+    fn add_host(
+        &mut self,
+        name: &str,
+        target: &str,
+        group: &str,
+        identity_file: &str,
+    ) -> Result<(), String> {
         if target.is_empty() {
             return Err("请填写地址".to_string());
         }
@@ -151,6 +227,9 @@ impl Workspace {
             .ok_or_else(|| "地址格式不对，应为 user@host 或 user@host:端口".to_string())?;
         if !name.is_empty() {
             host.name = name.to_string();
+        }
+        if !group.is_empty() {
+            host.group = Some(group.to_string());
         }
         if !identity_file.is_empty() {
             host.identity_file = Some(expand_home(identity_file));
@@ -182,6 +261,19 @@ impl Workspace {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.form.is_none() {
+            // 没有对话框时，这里只处理搜索框里的回车和 Esc。
+            if !self.search.read(cx).focus_handle(cx).is_focused(window) {
+                return;
+            }
+            match event.keystroke.key.as_str() {
+                "enter" => self.submit_search(window, cx),
+                "escape" => {
+                    self.search.update(cx, |input, cx| input.clear(cx));
+                    self.focus_active(window, cx);
+                }
+                _ => return,
+            }
+            cx.stop_propagation();
             return;
         }
         match event.keystroke.key.as_str() {
@@ -228,62 +320,164 @@ impl Workspace {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let hosts = self.hosts.iter().enumerate().map(|(index, host)| {
-            let deletable = index < self.saved_count;
-            div()
-                .px_3()
-                .py_1()
-                .flex()
-                .items_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(rgb(theme::HOVER_BG)))
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                        this.open_host(index, window, cx)
+        let query = self.search.read(cx).text().trim().to_string();
+        let searching = !query.is_empty();
+        let sections = self.sections(&query);
+        let quick_target = self.quick_target(&query);
+
+        // 每台主机最"值得注意"的会话状态，以及当前标签页对应的主机。
+        let mut states: HashMap<&str, SessionState> = HashMap::new();
+        for tab in &self.tabs {
+            let view = tab.read(cx);
+            let state = view.state();
+            states
+                .entry(view.host().name.as_str())
+                .and_modify(|known| {
+                    if state_rank(state) > state_rank(*known) {
+                        *known = state;
+                    }
+                })
+                .or_insert(state);
+        }
+        let active_host = self.tabs.get(self.active).map(|tab| tab.read(cx).host().name.as_str());
+
+        let mut rows = Vec::new();
+        if let Some(target) = quick_target {
+            let label = format!("连接 {}", target.address());
+            rows.push(
+                div()
+                    .mx_2()
+                    .mb_1()
+                    .px_2()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .rounded_sm()
+                    .cursor_pointer()
+                    .text_color(rgb(theme::ACCENT))
+                    .hover(|style| style.bg(rgb(theme::HOVER_BG)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                            this.search.update(cx, |input, cx| input.clear(cx));
+                            this.open_host(target.clone(), window, cx);
+                        }),
+                    )
+                    .child(div().min_w_0().truncate().child(label))
+                    // 有匹配的主机时回车打开的是第一台主机，这一行要用鼠标点。
+                    .when(sections.is_empty(), |row| {
+                        row.child(div().text_xs().text_color(rgb(theme::TEXT_MUTED)).child("回车"))
                     }),
-                )
-                .child(
+            );
+        }
+
+        for section in &sections {
+            let collapsed = !searching && self.collapsed.contains(&section.title);
+            let title = section.title.clone();
+            rows.push(
+                div()
+                    .px_3()
+                    .py_1()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .cursor_pointer()
+                    .text_xs()
+                    .text_color(rgb(theme::TEXT_MUTED))
+                    .hover(|style| style.text_color(rgb(theme::TEXT)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
+                            this.toggle_section(&title, cx)
+                        }),
+                    )
+                    .child(div().w(px(10.)).child(if collapsed { "▸" } else { "▾" }))
+                    .child(div().flex_1().min_w_0().truncate().child(section.title.clone()))
+                    .child(section.hosts.len().to_string()),
+            );
+            if collapsed {
+                continue;
+            }
+            for &index in &section.hosts {
+                let host = &self.hosts[index];
+                let deletable = index < self.saved_count;
+                let selected = active_host == Some(host.name.as_str());
+                let dot_color = states.get(host.name.as_str()).map(|state| state_color(*state));
+                let target = host.clone();
+                rows.push(
                     div()
-                        .flex_1()
-                        .min_w_0()
+                        .group("host-row")
+                        .mx_2()
+                        .pl_4()
+                        .pr_1()
+                        .py_1()
                         .flex()
-                        .flex_col()
-                        .child(host.name.clone())
+                        .items_center()
+                        .gap_2()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .when(selected, |row| row.bg(rgb(theme::HOVER_BG)))
+                        .hover(|style| style.bg(rgb(theme::HOVER_BG)))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                this.open_host(target.clone(), window, cx)
+                            }),
+                        )
+                        // 没有打开会话的主机也留出圆点的位置，名称才能对齐。
+                        .child(dot(dot_color))
                         .child(
                             div()
-                                .text_xs()
-                                .text_color(rgb(theme::TEXT_MUTED))
-                                .child(host.address()),
-                        ),
-                )
-                .when(deletable, |row| {
-                    row.child(
-                        div()
-                            .px_1()
-                            .rounded_sm()
-                            .text_color(rgb(theme::TEXT_MUTED))
-                            .hover(|style| style.bg(rgb(theme::BORDER)).text_color(rgb(theme::ERROR)))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
-                                    // 不让点击冒泡到整行，否则删除的同时会去连接。
-                                    cx.stop_propagation();
-                                    this.delete_host(index, cx);
-                                }),
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().truncate().child(host.name.clone()))
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .text_xs()
+                                        .text_color(rgb(theme::TEXT_MUTED))
+                                        .child(host.address()),
+                                ),
+                        )
+                        .when(deletable, |row| {
+                            row.child(
+                                div()
+                                    .px_1()
+                                    .rounded_sm()
+                                    .text_color(rgb(theme::TEXT_MUTED))
+                                    // 删除按钮只在鼠标移到这一行时出现，平时不抢视线。
+                                    .opacity(0.)
+                                    .group_hover("host-row", |style| style.opacity(1.))
+                                    .hover(|style| {
+                                        style.bg(rgb(theme::BORDER)).text_color(rgb(theme::ERROR))
+                                    })
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |this, _: &MouseDownEvent, _window, cx| {
+                                            // 不让点击冒泡到整行，否则删除的同时会去连接。
+                                            cx.stop_propagation();
+                                            this.delete_host(index, cx);
+                                        }),
+                                    )
+                                    .child("×"),
                             )
-                            .child("×"),
-                    )
-                })
-        });
+                        }),
+                );
+            }
+        }
 
-        let empty_hint = (self.hosts.is_empty() && self.error.is_none()).then(|| {
-            div()
-                .px_3()
-                .py_2()
-                .text_color(rgb(theme::TEXT_MUTED))
-                .child("还没有主机。点上方的「+ 添加」，或在 ~/.ssh/config 里配置。")
-        });
+        let hint = if !rows.is_empty() || self.error.is_some() {
+            None
+        } else if searching {
+            Some("没有匹配的主机")
+        } else {
+            Some("还没有主机。点上方的「+ 添加」，或在 ~/.ssh/config 里配置。")
+        };
+        let hint = hint
+            .map(|text| div().px_3().py_2().text_color(rgb(theme::TEXT_MUTED)).child(text));
         let error = self.error.clone().map(|message| {
             div().px_3().py_2().text_color(rgb(theme::ERROR)).child(message)
         });
@@ -302,7 +496,7 @@ impl Workspace {
         });
 
         div()
-            .w(px(220.))
+            .w(px(240.))
             .h_full()
             .flex()
             .flex_col()
@@ -320,15 +514,17 @@ impl Workspace {
                     .child(div().text_color(rgb(theme::TEXT_MUTED)).child("主机"))
                     .children(add_button),
             )
+            .child(div().px_2().pb_2().child(self.search.clone()))
             .children(error)
-            .children(empty_hint)
-            .child(div().id("host-list").flex_1().overflow_y_scroll().children(hosts))
+            .children(hint)
+            .child(div().id("host-list").flex_1().overflow_y_scroll().pb_2().children(rows))
     }
 
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.tabs.iter().enumerate().map(|(index, view)| {
             let active = index == self.active;
             let title = view.read(cx).tab_title();
+            let state = view.read(cx).state();
             let text_color = if active { theme::TEXT } else { theme::TEXT_MUTED };
             div()
                 .flex()
@@ -347,6 +543,7 @@ impl Workspace {
                         this.activate_tab(index, window, cx)
                     }),
                 )
+                .child(dot(Some(state_color(state))))
                 .child(title)
                 .child(
                     div()
@@ -374,6 +571,57 @@ impl Workspace {
             .border_b_1()
             .border_color(rgb(theme::BORDER))
             .children(tabs)
+    }
+
+    /// 底部状态栏：当前标签页的连接状态、延迟和终端尺寸。只显示真实测到的值。
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> Div {
+        let bar = div()
+            .h(px(24.))
+            .w_full()
+            .px_3()
+            .flex()
+            .flex_shrink_0()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .text_color(rgb(theme::TEXT_MUTED))
+            .bg(rgb(theme::SIDEBAR_BG))
+            .border_t_1()
+            .border_color(rgb(theme::BORDER));
+        let Some(tab) = self.tabs.get(self.active) else {
+            return bar.child("未连接");
+        };
+        let view = tab.read(cx);
+        let state = view.state();
+        let address = view.host().address();
+        let summary = match state {
+            SessionState::Connecting => format!("正在连接 {address}"),
+            SessionState::NeedsInput => format!("等待输入凭据 {address}"),
+            SessionState::Connected => format!("已连接 {address}"),
+            SessionState::Ended => format!("已断开 {address}"),
+            SessionState::Failed => format!("连接失败 {address}"),
+        };
+        let (cols, rows) = view.grid_size();
+
+        // 延迟只在连接存活时有意义。
+        let latency = (state == SessionState::Connected).then(|| view.latency()).and_then(|meter| {
+            let color = match meter.level()? {
+                LatencyLevel::Good => theme::SUCCESS,
+                LatencyLevel::Fair => theme::NOTICE,
+                LatencyLevel::Poor => theme::ERROR,
+            };
+            let text = if meter.timed_out() {
+                "无响应".to_string()
+            } else {
+                format!("{} ms", meter.millis()?)
+            };
+            Some(div().text_color(rgb(color)).child(text))
+        });
+
+        bar.child(dot(Some(state_color(state))))
+            .child(div().flex_1().min_w_0().truncate().child(summary))
+            .children(latency)
+            .child(format!("{cols}×{rows}"))
     }
 
     /// 盖住整个窗口的半透明遮罩，中间是对话框。
@@ -424,6 +672,7 @@ impl Workspace {
                     .child("添加主机")
                     .child(field("地址", &form.target))
                     .child(field("名称", &form.name))
+                    .child(field("分组", &form.group))
                     .child(field("私钥文件", &form.identity_file))
                     .children(form.error.clone().map(|message| {
                         div().text_color(rgb(theme::ERROR)).child(message)
@@ -458,6 +707,35 @@ impl Workspace {
                             ),
                     ),
             )
+    }
+}
+
+fn state_color(state: SessionState) -> u32 {
+    match state {
+        SessionState::Connecting | SessionState::NeedsInput => theme::NOTICE,
+        SessionState::Connected => theme::SUCCESS,
+        SessionState::Ended => theme::TEXT_MUTED,
+        SessionState::Failed => theme::ERROR,
+    }
+}
+
+/// 一台主机开了多个标签页时，侧栏显示其中哪个状态：需要用户处理的排在前面。
+fn state_rank(state: SessionState) -> u8 {
+    match state {
+        SessionState::Ended => 0,
+        SessionState::Connected => 1,
+        SessionState::Connecting => 2,
+        SessionState::Failed => 3,
+        SessionState::NeedsInput => 4,
+    }
+}
+
+/// 状态圆点；颜色为 None 时只占位不显示。
+fn dot(color: Option<u32>) -> Div {
+    let dot = div().w(px(7.)).h(px(7.)).flex_shrink_0().rounded_full();
+    match color {
+        Some(color) => dot.bg(rgb(color)),
+        None => dot,
     }
 }
 
@@ -510,7 +788,8 @@ impl Render for Workspace {
                     .flex()
                     .flex_col()
                     .child(self.render_tab_bar(cx))
-                    .child(content),
+                    .child(content)
+                    .child(self.render_status_bar(cx)),
             )
             .children(form)
     }

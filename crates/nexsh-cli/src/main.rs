@@ -181,6 +181,8 @@ fn run_session(options: ConnectOptions) -> Result<ExitCode, SshError> {
                         exit_code = ExitCode::from(code.unwrap_or(0).min(255) as u8);
                     }
                     Some(SessionEvent::Failed(error)) => failure = Some(error),
+                    // 延迟只在图形界面里显示。
+                    Some(SessionEvent::Latency(_)) => {}
                     Some(SessionEvent::Closed) | None => break,
                 },
                 _ = resize_poll.tick(), if raw_mode.is_some() => {

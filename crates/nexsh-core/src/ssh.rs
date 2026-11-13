@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use russh::keys::known_hosts::{check_known_hosts_path, learn_known_hosts_path};
 use russh::keys::{self, HashAlg, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate};
@@ -17,6 +17,9 @@ use crate::host::Host;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+/// 多久测一次往返延迟，以及等回应的时限。时限短于间隔，同一时刻最多一个探测在途。
+const LATENCY_INTERVAL: Duration = Duration::from_secs(5);
+const LATENCY_TIMEOUT: Duration = Duration::from_secs(4);
 /// 未被消费的事件上限，超过后对服务器施加背压。
 const EVENT_QUEUE_CAPACITY: usize = 256;
 /// 服务器通常在 6 次失败后断开（MaxAuthTries），给密钥文件和密码留出余量。
@@ -103,6 +106,8 @@ pub enum SessionEvent {
     Connected,
     /// 远端输出。
     Output(Vec<u8>),
+    /// 一次往返延迟的测量结果；None 表示在时限内没有得到回应。
+    Latency(Option<Duration>),
     /// 远端 shell 结束，携带退出码（服务器没报告时为 None）。
     Exited(Option<u32>),
     Failed(SshError),
@@ -254,8 +259,32 @@ async fn run_session(
     }
 
     let mut exit_status = None;
+    let mut probe_timer = tokio::time::interval(LATENCY_INTERVAL);
+    probe_timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // 在途的延迟探测。它和终端数据走同一条连接，放在同一个循环里轮询，不另开任务。
+    let mut probe = None;
+    let connection = &handle;
     loop {
         tokio::select! {
+            _ = probe_timer.tick(), if probe.is_none() => {
+                let started = Instant::now();
+                probe = Some(Box::pin(async move {
+                    match tokio::time::timeout(LATENCY_TIMEOUT, connection.send_ping()).await {
+                        Ok(Ok(())) => Some(started.elapsed()),
+                        _ => None,
+                    }
+                }));
+            }
+            sample = async {
+                match probe.as_mut() {
+                    Some(probe) => probe.await,
+                    None => std::future::pending().await,
+                }
+            }, if probe.is_some() => {
+                probe = None;
+                // 延迟只是参考信息：界面来不及处理时丢掉这个样本，不为它阻塞终端数据。
+                let _ = events.try_send(SessionEvent::Latency(sample));
+            }
             command = commands.recv() => match command {
                 Some(SessionCommand::Input(bytes)) => channel.data_bytes(bytes).await?,
                 Some(SessionCommand::Resize { cols, rows }) => {

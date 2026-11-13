@@ -10,6 +10,7 @@ pub const INPUT_BG: u32 = 0x16161a;
 pub const ACCENT: u32 = 0x7aa2f7;
 pub const TEXT: u32 = 0xd4d4d8;
 pub const TEXT_MUTED: u32 = 0x8b8b96;
+pub const SUCCESS: u32 = 0x9ece6a;
 pub const ERROR: u32 = 0xf7768e;
 pub const NOTICE: u32 = 0xe0af68;
 

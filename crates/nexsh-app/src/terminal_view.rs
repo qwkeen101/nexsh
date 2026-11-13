@@ -10,7 +10,8 @@ use gpui::{
     size,
 };
 use nexsh_core::{
-    ConnectOptions, Host, SessionCommand, SessionEvent, SessionHandle, SshError, spawn_session,
+    ConnectOptions, Host, LatencyMeter, SessionCommand, SessionEvent, SessionHandle, SshError,
+    spawn_session,
 };
 use nexsh_term::{KeyMods, Rgb, TermEvent, Terminal, bracketed_paste, encode_key};
 use tokio::sync::mpsc::UnboundedSender;
@@ -28,6 +29,17 @@ enum Status {
     Connected,
     Exited(Option<u32>),
     Failed(String),
+}
+
+/// 会话所处的阶段，供标签栏、侧栏和状态栏显示。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionState {
+    Connecting,
+    /// 等用户输入密码或口令。
+    NeedsInput,
+    Connected,
+    Ended,
+    Failed,
 }
 
 /// 连接需要用户补充的凭据。
@@ -57,6 +69,7 @@ pub struct TerminalView {
     title: Option<String>,
     /// 首次连接时记住主机密钥的提示。
     notice: Option<String>,
+    latency: LatencyMeter,
     /// 输入法正在组合、尚未提交的文字。
     composing: Option<String>,
     /// 光标所在单元格的位置，用来摆放输入法候选框。
@@ -84,6 +97,7 @@ impl TerminalView {
             status: Status::Connecting,
             title: None,
             notice: None,
+            latency: LatencyMeter::default(),
             composing: None,
             cursor_bounds: None,
             line_height: px(theme::FONT_SIZE * theme::LINE_HEIGHT),
@@ -129,6 +143,7 @@ impl TerminalView {
         self.status = Status::Connecting;
         self.title = None;
         self.notice = None;
+        self.latency = LatencyMeter::default();
         self.prompt = None;
         self.composing = None;
         let (commands, reader) = Self::start_session(self.options.clone(), cx);
@@ -174,6 +189,29 @@ impl TerminalView {
         self.reconnect(cx);
     }
 
+    pub fn host(&self) -> &Host {
+        &self.host
+    }
+
+    pub fn state(&self) -> SessionState {
+        match self.status {
+            _ if self.prompt.is_some() => SessionState::NeedsInput,
+            Status::Connecting => SessionState::Connecting,
+            Status::Connected => SessionState::Connected,
+            Status::Exited(_) => SessionState::Ended,
+            Status::Failed(_) => SessionState::Failed,
+        }
+    }
+
+    /// 终端当前的列数和行数。
+    pub fn grid_size(&self) -> (usize, usize) {
+        self.terminal.size()
+    }
+
+    pub fn latency(&self) -> &LatencyMeter {
+        &self.latency
+    }
+
     pub fn tab_title(&self) -> String {
         match &self.title {
             Some(title) if !title.is_empty() => title.clone(),
@@ -194,6 +232,7 @@ impl TerminalView {
                     let (cols, rows) = self.terminal.size();
                     self.send(SessionCommand::Resize { cols: cols as u32, rows: rows as u32 });
                 }
+                SessionEvent::Latency(sample) => self.latency.record(sample),
                 SessionEvent::Exited(code) => self.status = Status::Exited(code),
                 SessionEvent::Failed(error) => {
                     self.prompt = self.prompt_for(&error);

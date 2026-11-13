@@ -1,11 +1,14 @@
 //! nexsh 的核心库：主机配置、SSH 连接与会话。不依赖任何界面框架。
 
 pub mod host;
+pub mod latency;
+pub mod search;
 pub mod ssh;
 pub mod ssh_config;
 pub mod store;
 
 pub use host::Host;
+pub use latency::{LatencyLevel, LatencyMeter};
 pub use ssh::{
     ConnectOptions, HostKeyPolicy, SessionCommand, SessionEvent, SessionHandle, SshError,
     spawn_session,
