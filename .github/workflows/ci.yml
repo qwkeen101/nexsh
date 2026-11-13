@@ -47,23 +47,15 @@ jobs:
           grep -n -E -A14 '^(error|Error|ERROR)|panicked at|^failures:' test.log | head -c 3500 | report "test errors (first)" || true
           tail -n 40 test.log | tail -c 3500 | report "test log tail" || true
 
-  # 桌面界面：编译发布版并上传可执行文件。
+  # 桌面界面：编译发布版并上传可执行文件。日常只编译 Windows（测试用的平台），
+  # 手动运行这个工作流时三个平台都编译。
   app:
     name: app (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: nexsh-linux-x86_64
-            binary: target/release/nexsh
-          - os: macos-latest
-            artifact: nexsh-macos-arm64
-            binary: target/release/nexsh
-          - os: windows-latest
-            artifact: nexsh-windows-x86_64
-            binary: target/release/nexsh.exe
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","artifact":"nexsh-linux-x86_64","binary":"target/release/nexsh"},{"os":"macos-latest","artifact":"nexsh-macos-arm64","binary":"target/release/nexsh"},{"os":"windows-latest","artifact":"nexsh-windows-x86_64","binary":"target/release/nexsh.exe"}]' || '[{"os":"windows-latest","artifact":"nexsh-windows-x86_64","binary":"target/release/nexsh.exe"}]') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

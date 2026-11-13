@@ -1,12 +1,23 @@
 name: Release
 
-# 推送形如 v0.1.0 的标签时，在三个平台上编译、打包，并创建 GitHub Release。
+# 推送形如 v0.1.0 的标签时，只编译 Windows 版并创建 GitHub Release：日常测试只用 Windows，
+# 不必每次等另外两个平台。
+#
+# 需要 macOS 和 Linux 的安装包时，在 Actions 页面手动运行这个工作流并填入标签，
+# 它会编译这两个平台并把安装包补进同一个 Release。
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 要补齐 macOS 和 Linux 安装包的版本标签，例如 v0.1.6
+        required: true
 
 env:
   CARGO_TERM_COLOR: always
+  # 版本标签：推送标签时就是它，手动运行时取输入。
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -15,15 +26,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-latest
-            name: linux-x86_64
-          - os: macos-latest
-            name: macos-arm64
-          - os: windows-latest
-            name: windows-x86_64
+        include: ${{ fromJSON(github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","name":"linux-x86_64"},{"os":"macos-latest","name":"macos-arm64"}]' || '[{"os":"windows-latest","name":"windows-x86_64"}]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install Linux build dependencies
@@ -54,13 +61,13 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          dir="nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          dir="nexsh-${TAG}-${{ matrix.name }}"
           mkdir "$dir"
           cp target/release/nexsh target/release/nexsh-cli README.md "$dir/"
           tar -czf "$dir.tar.gz" "$dir"
 
           # .deb 安装包（Debian / Ubuntu）。
-          version="${GITHUB_REF_NAME#v}"
+          version="${TAG#v}"
           pkg="deb/nexsh"
           mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications"
           cp target/release/nexsh target/release/nexsh-cli "$pkg/usr/bin/"
@@ -77,15 +84,15 @@ jobs:
           Description: GPU-rendered SSH client
            Native cross-platform SSH client written in Rust.
           CONTROL
-          dpkg-deb --build --root-owner-group "$pkg" "nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}.deb"
+          dpkg-deb --build --root-owner-group "$pkg" "nexsh-${TAG}-${{ matrix.name }}.deb"
 
       # macOS 打成 .app，双击即可启动；命令行工具放在压缩包根目录。
       - name: Package (macOS)
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          version="${GITHUB_REF_NAME#v}"
-          dir="nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          version="${TAG#v}"
+          dir="nexsh-${TAG}-${{ matrix.name }}"
           app="$dir/nexsh.app"
           mkdir -p "$app/Contents/MacOS"
           cp target/release/nexsh "$app/Contents/MacOS/nexsh"
@@ -121,7 +128,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          dir="nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          dir="nexsh-${TAG}-${{ matrix.name }}"
           mkdir "$dir"
           cp target/release/nexsh.exe target/release/nexsh-cli.exe README.md "$dir/"
           7z a "$dir.zip" "$dir"
@@ -130,7 +137,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          NEXSH_TAG: ${{ github.ref_name }}
+          NEXSH_TAG: ${{ env.TAG }}
         run: |
           $env:NEXSH_VERSION = $env:NEXSH_TAG.TrimStart('v')
           $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
@@ -161,9 +168,15 @@ jobs:
           pattern: package-*
           merge-multiple: true
           path: dist
+      # 两次运行各传各的校验和文件，互不覆盖。
       - name: Checksums
-        run: cd dist && sha256sum nexsh-* > SHA256SUMS.txt && cat SHA256SUMS.txt
-      - uses: softprops/action-gh-release@v2
+        run: |
+          cd dist
+          sha256sum nexsh-* > "SHA256SUMS-${{ github.event_name == 'push' && 'windows' || 'macos-linux' }}.txt"
+          cat SHA256SUMS-*.txt
+      - name: Create release (Windows)
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           # 1.0 之前的版本都标记为预发布。
@@ -172,17 +185,17 @@ jobs:
           body: |
             nexsh ${{ github.ref_name }}
 
-            | 平台 | 安装包 | 免安装压缩包 |
-            |---|---|---|
-            | Windows (x86_64) | `nexsh-${{ github.ref_name }}-windows-x86_64-setup.exe` | `…-windows-x86_64.zip` |
-            | macOS (Apple 芯片) | `nexsh-${{ github.ref_name }}-macos-arm64.dmg` | `…-macos-arm64.zip` |
-            | Linux (x86_64) | `nexsh-${{ github.ref_name }}-linux-x86_64.deb` | `…-linux-x86_64.tar.gz` |
+            Windows (x86_64)：安装包 `nexsh-${{ github.ref_name }}-windows-x86_64-setup.exe`，免安装压缩包 `…-windows-x86_64.zip`。
+            里面都有桌面程序 `nexsh` 和命令行工具 `nexsh-cli`。
 
-            安装包和压缩包里都有桌面程序 `nexsh` 和命令行工具 `nexsh-cli`。
+            安装程序没有代码签名，SmartScreen 拦截时点"更多信息 → 仍要运行"。
 
-            - Windows：安装程序没有代码签名，SmartScreen 拦截时点"更多信息 → 仍要运行"。
-            - macOS：没有 Apple 开发者签名，首次打开需要右键点击 nexsh 选择"打开"，
-              或执行 `xattr -dr com.apple.quarantine /Applications/nexsh.app`。
-            - Linux：`sudo apt install ./nexsh-*.deb`。
-
-            已知限制见仓库 README。
+            macOS 和 Linux 的安装包按需另行构建。已知限制见仓库 README。
+      # 手动补齐其他平台：只往已有的 Release 里追加文件，不改说明。
+      - name: Add macOS and Linux packages
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          files: dist/*
+          prerelease: ${{ startsWith(env.TAG, 'v0.') }}
