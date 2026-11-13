@@ -8,8 +8,8 @@ use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jbyteArray, jint, jlong, jstring};
 use nexsh_term::KeyMods;
 
-use crate::engine::{Engine, Session};
-use crate::hosts::HostBook;
+use crate::engine::{Credentials, Engine, Session};
+use crate::hosts::{HostBook, describe_key};
 
 struct App {
     engine: Engine,
@@ -107,7 +107,19 @@ pub extern "system" fn Java_dev_nexsh_mobile_Bridge_deleteHost<'local>(
     java_string(&mut env, &message)
 }
 
+/// 检查一段文字是不是私钥。返回 JSON，见 `hosts::describe_key`。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_inspectKey<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    text: JString<'local>,
+) -> jstring {
+    let text = string(&mut env, &text).unwrap_or_default();
+    java_string(&mut env, &describe_key(&text))
+}
+
 /// 打开到已保存主机的会话，返回会话编号；找不到这台主机时返回 0。
+/// 密码、口令、私钥内容没有就传 null；它们只留在这个会话的内存里，供重连时使用。
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_nexsh_mobile_Bridge_open<'local>(
     mut env: JNIEnv<'local>,
@@ -117,16 +129,20 @@ pub extern "system" fn Java_dev_nexsh_mobile_Bridge_open<'local>(
     rows: jint,
     password: JString<'local>,
     passphrase: JString<'local>,
+    key: JString<'local>,
 ) -> jlong {
     let name = string(&mut env, &name).unwrap_or_default();
-    let password = string(&mut env, &password);
-    let passphrase = string(&mut env, &passphrase);
+    let credentials = Credentials {
+        password: string(&mut env, &password),
+        passphrase: string(&mut env, &passphrase),
+        key: string(&mut env, &key),
+    };
     let Some(app) = APP.get() else { return 0 };
     let Some(host) = book().and_then(|book| book.find(&name)) else { return 0 };
-    app.engine.open(host, cols.max(1) as usize, rows.max(1) as usize, password, passphrase) as jlong
+    app.engine.open(host, cols.max(1) as usize, rows.max(1) as usize, credentials) as jlong
 }
 
-/// 重新连接：断线之后，或者补上密码、口令之后。
+/// 重新连接：断线之后，或者补上密码、口令之后。传 null 的沿用会话记着的。
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_nexsh_mobile_Bridge_reconnect<'local>(
     mut env: JNIEnv<'local>,
@@ -139,6 +155,41 @@ pub extern "system" fn Java_dev_nexsh_mobile_Bridge_reconnect<'local>(
     let passphrase = string(&mut env, &passphrase);
     if let Some(session) = session(id) {
         session.connect(password, passphrase);
+    }
+}
+
+/// 正在等待重连的会话马上重连，不等退避时间到。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_retryNow<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+) {
+    if let Some(session) = session(id) {
+        session.retry_now();
+    }
+}
+
+/// 停止自动重连，会话停在"已断开"。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_stopRetry<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    id: jlong,
+) {
+    if let Some(session) = session(id) {
+        session.stop_retry();
+    }
+}
+
+/// 网络恢复或应用回到前台：所有等着重连的会话都马上试一次。
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_nexsh_mobile_Bridge_networkAvailable<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) {
+    if let Some(app) = APP.get() {
+        app.engine.retry_all();
     }
 }
 

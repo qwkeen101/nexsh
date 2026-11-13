@@ -1,7 +1,9 @@
 package dev.nexsh.mobile
 
-import android.os.Bundle
 import android.graphics.Color
+import android.net.ConnectivityManager
+import android.net.Network
+import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -35,6 +37,29 @@ object Sessions {
 }
 
 class MainActivity : ComponentActivity() {
+    /** 换了网络（Wi-Fi 和移动数据之间切换、信号恢复）时，等着重连的会话不必再等退避时间。 */
+    private val network = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            Bridge.networkAvailable()
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // 回到前台：后台期间排着的重连现在就做。注册回调时系统还会为当前网络再通知一次。
+        Bridge.networkAvailable()
+        runCatching {
+            getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(network)
+        }
+    }
+
+    override fun onStop() {
+        runCatching {
+            getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(network)
+        }
+        super.onStop()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 界面只有深色一种，状态栏和导航栏的图标固定用浅色，不跟随系统的浅色模式。
@@ -67,9 +92,14 @@ private fun App(startError: String, secrets: Secrets) {
                 hosts = hosts,
                 sessions = Sessions.open,
                 onConnect = { host ->
-                    val password = secrets.load(Secrets.password(host.name))
+                    val useKey = host.auth == "key"
                     // 行列数先给个常见值，终端控件量出实际大小后会立刻改掉。
-                    val id = Bridge.open(host.name, 80, 24, password, null)
+                    val id = Bridge.open(
+                        host.name, 80, 24,
+                        secrets.load(Secrets.password(host.name)),
+                        if (useKey) secrets.load(Secrets.passphrase(host.name)) else null,
+                        if (useKey) secrets.load(Secrets.key(host.name)) else null,
+                    )
                     if (id != 0L) {
                         val session = OpenSession(id, host.name)
                         Sessions.open.add(session)
@@ -81,8 +111,7 @@ private fun App(startError: String, secrets: Secrets) {
                 onEdit = { screen = Screen.Edit(it) },
                 onDelete = { host ->
                     error = Bridge.deleteHost(host.name)
-                    // 主机没了，它的密码也不该留着。
-                    if (error.isEmpty()) secrets.delete(Secrets.password(host.name))
+                    if (error.isEmpty()) secrets.deleteHost(host.name)
                     hosts = loadHosts()
                 },
             )
@@ -94,12 +123,26 @@ private fun App(startError: String, secrets: Secrets) {
                     original = original,
                     groups = hosts.map { it.group }.distinct(),
                     hasSavedPassword = original != null && secrets.load(Secrets.password(original.name)) != null,
+                    savedKey = remember(original) {
+                        original?.let { secrets.load(Secrets.key(it.name)) }?.let(::keySummary)
+                    },
+                    hasSavedPassphrase = original != null && secrets.load(Secrets.passphrase(original.name)) != null,
                     onCancel = { screen = Screen.Hosts },
-                    onSaved = { name, password ->
-                        if (original != null && original.name != name) {
-                            secrets.rename(Secrets.password(original.name), Secrets.password(name))
+                    onSaved = { name, saved ->
+                        if (original != null && original.name != name) secrets.renameHost(original.name, name)
+                        if (saved.useKey) {
+                            if (saved.key.isNotEmpty()) {
+                                secrets.store(Secrets.key(name), saved.key)
+                                // 换了一把私钥，之前那把的口令不再适用。
+                                secrets.delete(Secrets.passphrase(name))
+                            }
+                            if (saved.passphrase.isNotEmpty()) secrets.store(Secrets.passphrase(name), saved.passphrase)
+                        } else {
+                            // 改回密码登录：私钥不再用得到，不留在手机上。
+                            secrets.delete(Secrets.key(name))
+                            secrets.delete(Secrets.passphrase(name))
+                            if (saved.password.isNotEmpty()) secrets.store(Secrets.password(name), saved.password)
                         }
-                        if (password.isNotEmpty()) secrets.store(Secrets.password(name), password)
                         hosts = loadHosts()
                         screen = Screen.Hosts
                     },

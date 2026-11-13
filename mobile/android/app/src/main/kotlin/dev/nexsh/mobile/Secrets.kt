@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * 已保存的密码。密文放在应用私有的存储里，加密密钥由系统密钥库生成并留在里面：
+ * 已保存的密码、私钥和私钥口令。密文放在应用私有的存储里，加密密钥由系统密钥库生成并留在里面：
  * 拿到这个文件的人没有密钥，密钥也导不出这台设备。
  */
 class Secrets(context: Context) {
@@ -57,10 +57,21 @@ class Secrets(context: Context) {
         prefs.edit().remove(account).apply()
     }
 
-    /** 主机改名时把密码带过去。 */
-    fun rename(from: String, to: String) {
-        val encoded = prefs.getString(from, null) ?: return
-        prefs.edit().remove(from).putString(to, encoded).apply()
+    /** 主机改名时把它的凭据带过去。 */
+    fun renameHost(from: String, to: String) {
+        val edit = prefs.edit()
+        for (kind in KINDS) {
+            val encoded = prefs.getString(kind + from, null) ?: continue
+            edit.remove(kind + from).putString(kind + to, encoded)
+        }
+        edit.apply()
+    }
+
+    /** 主机删除后，它的凭据也不该留着。 */
+    fun deleteHost(host: String) {
+        val edit = prefs.edit()
+        for (kind in KINDS) edit.remove(kind + host)
+        edit.apply()
     }
 
     companion object {
@@ -69,6 +80,14 @@ class Secrets(context: Context) {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
         private const val IV_SIZE = 12
 
+        private val KINDS = listOf("password:", "key:", "passphrase:")
+
         fun password(host: String) = "password:" + host
+
+        /** 私钥内容。 */
+        fun key(host: String) = "key:" + host
+
+        /** 私钥的口令。 */
+        fun passphrase(host: String) = "passphrase:" + host
     }
 }

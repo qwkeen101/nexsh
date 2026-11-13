@@ -36,6 +36,8 @@ pub enum State {
     NeedsPassphrase = 3,
     Exited = 4,
     Failed = 5,
+    /// 连接断了，正在等待重连或重连中；message 里是进度。
+    Reconnecting = 6,
 }
 
 pub struct Snapshot<'a> {

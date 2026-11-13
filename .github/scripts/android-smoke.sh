@@ -21,6 +21,13 @@ adb shell input tap $((w - 126)) $((h - 220))
 sleep 2
 shot m02-add
 
+# 登录方式切到"私钥"看一眼导入区域，再切回"密码"。
+adb shell input tap $((w * 3 / 4)) 940
+sleep 1
+shot m02b-key-mode
+adb shell input tap $((w / 4)) 940
+sleep 1
+
 # 地址和用户名：10.0.2.2 是模拟器眼里的宿主机，22 端口没人监听，连接会立刻被拒绝。
 adb shell input tap 300 460
 sleep 1
@@ -43,6 +50,55 @@ shot m05-terminal
 adb shell input tap 400 1200
 sleep 3
 shot m06-keyboard
+
+# ---- 私钥登录、打字、断线重连 ----
+# 宿主机上起 sshd，给当前用户授权一把临时私钥；应用用这把私钥真正登录进来。
+# 私钥和主机列表直接写进应用的私有目录（调试包允许 run-as），绕开文件选择器。
+sudo systemctl start ssh || sudo service ssh start
+rm -f /tmp/nexsh_ci_key /tmp/nexsh_ci_key.pub
+ssh-keygen -q -t ed25519 -N "" -f /tmp/nexsh_ci_key
+mkdir -p ~/.ssh
+cat /tmp/nexsh_ci_key.pub >> ~/.ssh/authorized_keys
+chmod go-w ~ && chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys
+
+adb shell am force-stop dev.nexsh.mobile
+adb shell "run-as dev.nexsh.mobile sh -c 'cat > files/ci_key'" < /tmp/nexsh_ci_key
+cat > /tmp/nexsh_hosts.toml <<EOF
+[[host]]
+name = "ci-key"
+hostname = "10.0.2.2"
+port = 22
+user = "$(id -un)"
+identity_file = "/data/user/0/dev.nexsh.mobile/files/ci_key"
+auth = "key"
+EOF
+adb shell "run-as dev.nexsh.mobile sh -c 'cat > files/hosts.toml'" < /tmp/nexsh_hosts.toml
+adb shell run-as dev.nexsh.mobile ls -l files
+
+adb shell am start -W -n dev.nexsh.mobile/.MainActivity
+sleep 5
+adb shell input tap 400 490
+sleep 8
+shot m07-key-login
+
+# 点终端取得焦点，敲一条命令。
+adb shell input tap 400 900
+sleep 2
+adb shell input text "echo%snexsh-typing-ok"
+adb shell input keyevent 66
+sleep 3
+shot m08-typed
+
+# 停掉 sshd 并踢掉已有的会话：应用应当发现断线并开始重连。
+sudo systemctl stop ssh.socket ssh.service
+sudo pkill -f "sshd: $(id -un)"
+sleep 4
+shot m09-reconnecting
+
+# sshd 回来之后，下一次重连应当成功，回到"已连接"。
+sudo systemctl start ssh.service || sudo systemctl start ssh.socket
+sleep 25
+shot m10-reconnected
 
 adb shell pidof dev.nexsh.mobile || echo "应用已经不在运行"
 adb logcat -d -t 400 "*:W" > shots/logcat.txt

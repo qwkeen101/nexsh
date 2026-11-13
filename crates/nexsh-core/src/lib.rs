@@ -14,8 +14,8 @@ pub use draft::{Field, FieldError, HostInput};
 pub use host::{AuthMethod, Host};
 pub use latency::{LatencyLevel, LatencyMeter};
 pub use ssh::{
-    ConnectOptions, HostKeyPolicy, ProbeReport, SessionCommand, SessionEvent, SessionHandle,
-    SshError, spawn_probe, spawn_session,
+    ConnectOptions, HostKeyPolicy, KeyInfo, KeyProblem, KeySource, ProbeReport, SessionCommand,
+    SessionEvent, SessionHandle, SshError, inspect_key, spawn_probe, spawn_session,
 };
 pub use store::HostStore;
 

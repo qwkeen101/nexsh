@@ -127,9 +127,8 @@ fn connect(target: &str, rest: &[&str]) -> Result<ExitCode, String> {
                 options.password =
                     Some(ask_secret(format!("{} 的密码: ", options.host.address()))?);
             }
-            Err(SshError::PassphraseRequired(path)) => {
-                options.key_passphrase =
-                    Some(ask_secret(format!("私钥 {} 的口令: ", path.display()))?);
+            Err(SshError::PassphraseRequired(source)) => {
+                options.key_passphrase = Some(ask_secret(format!("{source}的口令: "))?);
             }
             Err(error) => return Err(error.to_string()),
         }

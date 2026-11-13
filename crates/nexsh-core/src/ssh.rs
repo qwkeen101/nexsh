@@ -4,6 +4,7 @@
 //! 执行器（界面线程不需要 tokio）。事件通道有容量上限：界面来不及消费时，
 //! 这里会停止读取 SSH 通道，压力一路传回服务器，内存不会无限增长。
 
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -45,14 +46,90 @@ pub enum SshError {
     HostCertificateUnsupported(String),
     #[error("无法读写 known_hosts: {0}")]
     KnownHosts(String),
-    #[error("私钥 {} 有口令保护，需要输入口令", .0.display())]
-    PassphraseRequired(PathBuf),
+    #[error("{0}有口令保护，需要输入口令")]
+    PassphraseRequired(KeySource),
     #[error("密钥认证未通过，需要输入密码")]
     PasswordRequired,
     #[error("认证失败，已尝试: {}", .tried.join("、"))]
     AuthFailed { tried: Vec<String> },
     #[error("SSH 协议错误: {0}")]
     Protocol(#[from] russh::Error),
+}
+
+/// 一把私钥从哪里来。显示出来是"私钥 /路径"或"导入的私钥"，后面可以直接接谓语。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeySource {
+    File(PathBuf),
+    /// 内容由调用方直接给出（[`ConnectOptions::identity`]），没有对应的文件。
+    Imported,
+}
+
+impl fmt::Display for KeySource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeySource::File(path) => write!(f, "私钥 {} ", path.display()),
+            KeySource::Imported => f.write_str("导入的私钥"),
+        }
+    }
+}
+
+/// 一把私钥的公开信息，导入时给用户核对用。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KeyInfo {
+    /// 算法名，如 `ssh-ed25519`。
+    pub algorithm: String,
+    /// 公钥的 SHA256 指纹，和 `ssh-keygen -l` 显示的一致。
+    pub fingerprint: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyProblem {
+    /// 有口令保护，而且没有给口令。
+    Encrypted,
+    WrongPassphrase,
+    /// 不是能识别的私钥；携带解析器给出的原因。
+    Invalid(String),
+}
+
+/// 检查一段文字是不是可用的私钥。口令为空等同于没给。
+pub fn inspect_key(text: &str, passphrase: Option<&str>) -> Result<KeyInfo, KeyProblem> {
+    let passphrase = passphrase.filter(|passphrase| !passphrase.is_empty());
+    match decode_key(text, None) {
+        Ok(key) => Ok(key_info(&key)),
+        Err(keys::Error::KeyIsEncrypted) => match passphrase {
+            None => Err(KeyProblem::Encrypted),
+            Some(passphrase) => decode_key(text, Some(passphrase))
+                .map(|key| key_info(&key))
+                .map_err(|_| KeyProblem::WrongPassphrase),
+        },
+        Err(error) => Err(KeyProblem::Invalid(error.to_string())),
+    }
+}
+
+fn key_info(key: &keys::PrivateKey) -> KeyInfo {
+    KeyInfo {
+        algorithm: key.algorithm().as_str().to_string(),
+        fingerprint: key.public_key().fingerprint(HashAlg::Sha256).to_string(),
+    }
+}
+
+/// 解析私钥文字。从聊天软件、网页里复制出来的私钥常带着行首行尾的空白和 Windows 换行，
+/// 解析器按整行比对 BEGIN/END 标记，所以先逐行去掉空白。
+fn decode_key(text: &str, passphrase: Option<&str>) -> Result<keys::PrivateKey, keys::Error> {
+    let mut clean = String::with_capacity(text.len() + 1);
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        clean.push_str(line);
+        clean.push('\n');
+    }
+    // PuTTY 格式的加密私钥在没给口令时报的是普通的解析错误，这里统一成"需要口令"。
+    let putty_encrypted = clean.starts_with("PuTTY-User-Key-File-")
+        && clean.lines().any(|line| {
+            line.strip_prefix("Encryption:").is_some_and(|value| value.trim() != "none")
+        });
+    if putty_encrypted && passphrase.is_none() {
+        return Err(keys::Error::KeyIsEncrypted);
+    }
+    keys::decode_secret_key(&clean, passphrase)
 }
 
 /// 遇到 known_hosts 里没有的主机时怎么办。
@@ -75,6 +152,8 @@ pub struct ConnectOptions {
     pub password: Option<String>,
     /// 私钥口令。空字符串表示跳过有口令保护的私钥。
     pub key_passphrase: Option<String>,
+    /// 私钥内容。给出时只用它，不再去读私钥文件：手机上私钥加密保存在应用里，不落成明文文件。
+    pub identity: Option<String>,
     pub host_key_policy: HostKeyPolicy,
     /// 为 None 时使用 `~/.ssh/known_hosts`。
     pub known_hosts_path: Option<PathBuf>,
@@ -91,6 +170,7 @@ impl ConnectOptions {
             rows,
             password: None,
             key_passphrase: None,
+            identity: None,
             host_key_policy: HostKeyPolicy::default(),
             known_hosts_path: None,
         }
@@ -400,25 +480,34 @@ async fn authenticate(
     }
 
     let mut encrypted_key = None;
-    let key_files =
-        if method == AuthMethod::Password { Vec::new() } else { identity_candidates(&options.host) };
-    for path in key_files {
+    let sources = if method == AuthMethod::Password { Vec::new() } else { key_sources(options) };
+    for source in sources {
+        let label = source.to_string().trim_end().to_string();
+        let text = match &source {
+            KeySource::File(path) => std::fs::read_to_string(path).map_err(keys::Error::from),
+            KeySource::Imported => Ok(options.identity.clone().unwrap_or_default()),
+        };
         // 先不带口令读：没加密的私钥不受口令影响，加密的再用口令重试。
-        let loaded = match keys::load_secret_key(&path, None) {
-            Err(keys::Error::KeyIsEncrypted) => match options.key_passphrase.as_deref() {
+        let loaded = text.and_then(|text| match decode_key(&text, None) {
+            Err(keys::Error::KeyIsEncrypted) => Ok(Err(text)),
+            other => other.map(Ok),
+        });
+        let loaded = match loaded {
+            Ok(Err(text)) => match options.key_passphrase.as_deref() {
                 None => {
-                    encrypted_key.get_or_insert(path);
+                    encrypted_key.get_or_insert(source);
                     continue;
                 }
                 // 空口令表示用户选择跳过加密的私钥。
                 Some("") => continue,
-                Some(passphrase) => match keys::load_secret_key(&path, Some(passphrase)) {
+                Some(passphrase) => match decode_key(&text, Some(passphrase)) {
                     Ok(key) => Ok(key),
                     // 口令不对：让调用方重新询问，而不是悄悄改用密码。
-                    Err(_) => return Err(SshError::PassphraseRequired(path)),
+                    Err(_) => return Err(SshError::PassphraseRequired(source)),
                 },
             },
-            other => other,
+            Ok(Ok(key)) => Ok(key),
+            Err(error) => Err(error),
         };
         match loaded {
             Ok(key) => {
@@ -426,16 +515,16 @@ async fn authenticate(
                 if handle.authenticate_publickey(user, key).await?.success() {
                     return Ok(());
                 }
-                tried.push(format!("私钥 {}", path.display()));
+                tried.push(label);
             }
-            Err(error) => tried.push(format!("私钥 {}（{error}）", path.display())),
+            Err(error) => tried.push(format!("{label}（{error}）")),
         }
     }
 
     if method == AuthMethod::Key {
         // 只用私钥：不退回密码，免得用户以为私钥生效了。
         return Err(match encrypted_key {
-            Some(path) => SshError::PassphraseRequired(path),
+            Some(source) => SshError::PassphraseRequired(source),
             None => SshError::AuthFailed { tried },
         });
     }
@@ -448,8 +537,8 @@ async fn authenticate(
     }
 
     // 还有没用上的凭据时，告诉调用方该向用户要什么。
-    if let Some(path) = encrypted_key {
-        return Err(SshError::PassphraseRequired(path));
+    if let Some(source) = encrypted_key {
+        return Err(SshError::PassphraseRequired(source));
     }
     if options.password.is_none() {
         return Err(SshError::PasswordRequired);
@@ -457,16 +546,20 @@ async fn authenticate(
     Err(SshError::AuthFailed { tried })
 }
 
-/// 主机指定了私钥就只用它，否则按 OpenSSH 的默认顺序找。
-fn identity_candidates(host: &Host) -> Vec<PathBuf> {
-    if let Some(path) = &host.identity_file {
-        return vec![path.clone()];
+/// 直接给了私钥内容或主机指定了私钥文件时只用那一把，否则按 OpenSSH 的默认顺序找。
+fn key_sources(options: &ConnectOptions) -> Vec<KeySource> {
+    if options.identity.is_some() {
+        return vec![KeySource::Imported];
+    }
+    if let Some(path) = &options.host.identity_file {
+        return vec![KeySource::File(path.clone())];
     }
     let Some(home) = std::env::home_dir() else { return Vec::new() };
     ["id_ed25519", "id_ecdsa", "id_rsa"]
         .into_iter()
         .map(|name| home.join(".ssh").join(name))
         .filter(|path| path.is_file())
+        .map(KeySource::File)
         .collect()
 }
 
@@ -502,4 +595,69 @@ async fn try_agent(
     _tried: &mut Vec<String>,
 ) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 专为测试生成的密钥，没有在任何服务器上授权过。
+    const PLAIN_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\n\
+QyNTUxOQAAACCwLzQR+Vm5cGy4IL28PkZgk0bqgqL0t78JDY3XIt6BHQAAAJAtWtwcLVrc\n\
+HAAAAAtzc2gtZWQyNTUxOQAAACCwLzQR+Vm5cGy4IL28PkZgk0bqgqL0t78JDY3XIt6BHQ\n\
+AAAEBSvIuez8jkC5u2WLcTErl0K8xymT1HBYXhZ3qL9Gwsd7AvNBH5WblwbLggvbw+RmCT\n\
+RuqCovS3vwkNjdci3oEdAAAACm5leHNoLXRlc3QBAgM=\n\
+-----END OPENSSH PRIVATE KEY-----\n";
+    /// 口令是 nexsh。
+    const ENCRYPTED_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\n\
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABD7iWZmoJ\n\
+V3vCVGAuEN3v1JAAAAAgAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAINKMVNEnZDCoPgub\n\
+UBAktOwNzSDSW6sJpAmk63V2///LAAAAkCbgKcyJujrfdqyD8wWAerfF7qgM9LnIUbP1qO\n\
+Qoyi9ulFExogs0G3MDzIcqghqxflBL+YMzOYbAWB+9E8AErgWF8XkC6Qd2utLOivbXbKUd\n\
+5hv4SYXaFBYlNvi5gQjpbg5Mc3LP0NiR7grOm3M9aLXki5fo5/IrFrZfiQivsF7bHn41xV\n\
+aC1iNWDhHq2vl8dA==\n\
+-----END OPENSSH PRIVATE KEY-----\n";
+
+    #[test]
+    fn describes_a_plain_key() {
+        let info = inspect_key(PLAIN_KEY, None).unwrap();
+        assert_eq!(info.algorithm, "ssh-ed25519");
+        assert_eq!(info.fingerprint, "SHA256:HNqfXvoiwH/1RzepruUjvTB2l6kyum10jGTbbo+AUWM");
+    }
+
+    #[test]
+    fn tolerates_pasted_whitespace() {
+        let pasted: String =
+            PLAIN_KEY.lines().map(|line| format!("  {line} \r\n\r\n")).collect();
+        assert_eq!(inspect_key(&pasted, None), inspect_key(PLAIN_KEY, None));
+    }
+
+    #[test]
+    fn encrypted_keys_need_the_right_passphrase() {
+        assert_eq!(inspect_key(ENCRYPTED_KEY, None), Err(KeyProblem::Encrypted));
+        assert_eq!(inspect_key(ENCRYPTED_KEY, Some("")), Err(KeyProblem::Encrypted));
+        assert_eq!(inspect_key(ENCRYPTED_KEY, Some("wrong")), Err(KeyProblem::WrongPassphrase));
+        assert_eq!(inspect_key(ENCRYPTED_KEY, Some("nexsh")).unwrap().algorithm, "ssh-ed25519");
+    }
+
+    #[test]
+    fn rejects_text_that_is_not_a_key() {
+        assert!(matches!(inspect_key("ssh-ed25519 AAAA", None), Err(KeyProblem::Invalid(_))));
+        assert!(matches!(inspect_key("", None), Err(KeyProblem::Invalid(_))));
+    }
+
+    #[test]
+    fn an_imported_key_takes_precedence_over_files() {
+        let mut host = Host::parse_target("a@b").unwrap();
+        host.identity_file = Some(PathBuf::from("/keys/a"));
+        let mut options = ConnectOptions::new(host, 80, 24);
+        assert_eq!(key_sources(&options), vec![KeySource::File(PathBuf::from("/keys/a"))]);
+        options.identity = Some(PLAIN_KEY.to_string());
+        assert_eq!(key_sources(&options), vec![KeySource::Imported]);
+        assert_eq!(
+            SshError::PassphraseRequired(KeySource::Imported).to_string(),
+            "导入的私钥有口令保护，需要输入口令"
+        );
+    }
 }

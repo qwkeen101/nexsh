@@ -574,9 +574,9 @@ fn describe_probe(result: Result<ProbeReport, SshError>) -> (Verdict, String) {
             Verdict::Reachable,
             "能连上服务器，但登录需要密码。可以在上面填写，或留到连接时输入。".to_string(),
         ),
-        Err(SshError::PassphraseRequired(path)) => (
+        Err(SshError::PassphraseRequired(source)) => (
             Verdict::Reachable,
-            format!("能连上服务器，但私钥 {} 需要口令。", path.display()),
+            format!("能连上服务器，但{source}需要口令。"),
         ),
         Err(error) => (Verdict::Failure, error.to_string()),
     }

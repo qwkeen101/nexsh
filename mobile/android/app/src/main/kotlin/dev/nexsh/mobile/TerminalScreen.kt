@@ -80,8 +80,6 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
     val alt = remember { mutableIntStateOf(OFF) }
     val ctrlTap = remember { mutableLongStateOf(0L) }
     val altTap = remember { mutableLongStateOf(0L) }
-    // 这次会话里输入过的密码，断线重连时接着用。
-    var typedPassword by remember { mutableStateOf<String?>(null) }
 
     val view = remember {
         TerminalView(context).apply {
@@ -99,11 +97,6 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
             }
             sessionId = session.id
         }
-    }
-
-    fun reconnect() {
-        val password = typedPassword ?: secrets.load(Secrets.password(session.host))
-        Bridge.reconnect(session.id, password, null)
     }
 
     Column(Modifier.fillMaxSize().background(Palette.Background)) {
@@ -127,6 +120,7 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
                     val (label, color) = when (state.intValue) {
                         Frame.CONNECTED -> "已连接" to Palette.Success
                         Frame.CONNECTING -> "正在连接" to Palette.Notice
+                        Frame.RECONNECTING -> "正在重连" to Palette.Notice
                         Frame.NEEDS_PASSWORD, Frame.NEEDS_PASSPHRASE -> "等待输入凭据" to Palette.Notice
                         Frame.EXITED -> "已断开" to Palette.Faint
                         else -> "连接失败" to Palette.Error
@@ -144,18 +138,30 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
             }
         }
 
-        if (state.intValue == Frame.EXITED || state.intValue == Frame.FAILED) {
+        val current = state.intValue
+        if (current == Frame.EXITED || current == Frame.FAILED || current == Frame.RECONNECTING) {
             Row(
                 Modifier.fillMaxWidth().background(Palette.Surface).padding(start = 16.dp, end = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
                     message.ifEmpty { "连接已断开" },
-                    color = if (state.intValue == Frame.FAILED) Palette.Error else Palette.Muted,
+                    color = when (current) {
+                        Frame.FAILED -> Palette.Error
+                        Frame.RECONNECTING -> Palette.Notice
+                        else -> Palette.Muted
+                    },
                     fontSize = 13.sp,
                     modifier = Modifier.weight(1f).padding(vertical = 8.dp),
                 )
-                TextButton(onClick = { reconnect() }) { Text("重新连接") }
+                if (current == Frame.RECONNECTING) {
+                    // 自动重连按退避间隔进行；等不及可以马上试，不想连了可以停下。
+                    TextButton(onClick = { Bridge.retryNow(session.id) }) { Text("立即重连") }
+                    TextButton(onClick = { Bridge.stopRetry(session.id) }) { Text("停止") }
+                } else {
+                    // 密码、口令沿用会话记着的；被服务器拒绝过的已经忘掉，会重新询问。
+                    TextButton(onClick = { Bridge.reconnect(session.id, null, null) }) { Text("重新连接") }
+                }
             }
         }
 
@@ -209,14 +215,12 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
                         visualTransformation = PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                     )
-                    if (!forKey) {
-                        Row(
-                            Modifier.clickable { keep = !keep },
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(checked = keep, onCheckedChange = { keep = it })
-                            Text("记住密码", color = Palette.Muted, fontSize = 14.sp)
-                        }
+                    Row(
+                        Modifier.clickable { keep = !keep },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = keep, onCheckedChange = { keep = it })
+                        Text(if (forKey) "记住口令" else "记住密码", color = Palette.Muted, fontSize = 14.sp)
                     }
                 }
             },
@@ -225,9 +229,9 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
                     // 先改状态再重连：核心回报新状态之前，对话框不该再闪一下。
                     state.intValue = Frame.CONNECTING
                     if (forKey) {
-                        Bridge.reconnect(session.id, typedPassword, secret)
+                        if (keep) secrets.store(Secrets.passphrase(session.host), secret)
+                        Bridge.reconnect(session.id, null, secret)
                     } else {
-                        typedPassword = secret
                         if (keep) secrets.store(Secrets.password(session.host), secret)
                         Bridge.reconnect(session.id, secret, null)
                     }

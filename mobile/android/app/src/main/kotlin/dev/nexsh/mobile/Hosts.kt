@@ -52,6 +52,8 @@ data class HostItem(
     val group: String,
     val note: String,
     val address: String,
+    /** "key" 表示只用私钥登录；其余按密码处理。 */
+    val auth: String,
 )
 
 fun loadHosts(): List<HostItem> {
@@ -66,6 +68,7 @@ fun loadHosts(): List<HostItem> {
             group = item.optString("group"),
             note = item.optString("note"),
             address = item.getString("address"),
+            auth = item.optString("auth"),
         )
     }
 }

@@ -155,14 +155,11 @@ impl TerminalView {
     /// 认证失败时，判断是否该向用户要密码或口令。
     fn prompt_for(&self, error: &SshError) -> Option<Prompt> {
         match error {
-            SshError::PassphraseRequired(path) => {
+            SshError::PassphraseRequired(source) => {
                 let retry = if self.options.key_passphrase.is_some() { "口令不正确。" } else { "" };
                 Some(Prompt {
                     secret: Secret::Passphrase,
-                    message: format!(
-                        "{retry}输入私钥 {} 的口令（留空回车则跳过此私钥）",
-                        path.display()
-                    ),
+                    message: format!("{retry}输入{source}的口令（留空回车则跳过此私钥）"),
                 })
             }
             SshError::PasswordRequired => Some(Prompt {

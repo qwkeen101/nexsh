@@ -59,6 +59,7 @@ class Frame(private val bytes: ByteArray) {
         const val NEEDS_PASSPHRASE = 3
         const val EXITED = 4
         const val FAILED = 5
+        const val RECONNECTING = 6
 
         const val BOLD = 1
         const val ITALIC = 2

@@ -26,9 +26,33 @@ object Bridge {
     /** 返回空字符串表示成功。 */
     @JvmStatic external fun deleteHost(name: String): String
 
-    @JvmStatic external fun open(name: String, cols: Int, rows: Int, password: String?, passphrase: String?): Long
+    /**
+     * 检查一段文字是不是私钥。返回 JSON：ok、encrypted，没有口令保护时还有 algorithm 和 fingerprint；
+     * 不是私钥时 ok 为 false，message 是原因。
+     */
+    @JvmStatic external fun inspectKey(text: String): String
 
+    /** 密码、口令、私钥内容没有就传 null。它们留在会话的内存里，断线重连时接着用。 */
+    @JvmStatic external fun open(
+        name: String,
+        cols: Int,
+        rows: Int,
+        password: String?,
+        passphrase: String?,
+        key: String?,
+    ): Long
+
+    /** 用户发起的重新连接。传 null 的沿用会话记着的。 */
     @JvmStatic external fun reconnect(id: Long, password: String?, passphrase: String?)
+
+    /** 正在等待自动重连的会话马上重连。 */
+    @JvmStatic external fun retryNow(id: Long)
+
+    /** 停止自动重连。 */
+    @JvmStatic external fun stopRetry(id: Long)
+
+    /** 网络恢复或应用回到前台时调用：等着重连的会话都马上试一次。 */
+    @JvmStatic external fun networkAvailable()
 
     /** 画面自 since 那一代以来没变时返回 null。格式见 Frame。 */
     @JvmStatic external fun snapshot(id: Long, since: Long): ByteArray?

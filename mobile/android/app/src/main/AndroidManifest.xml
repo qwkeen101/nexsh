@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 只用来得知网络恢复，好让断开的会话马上重连。 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!-- 主机列表和已保存的密码不进系统备份：密码的加密密钥留在这台设备的密钥库里，换了设备也解不开。 -->
     <application
