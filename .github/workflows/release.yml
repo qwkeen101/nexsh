@@ -1,0 +1,145 @@
+name: Release
+
+# 推送形如 v0.1.0 的标签时，在三个平台上编译、打包，并创建 GitHub Release。
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x86_64
+          - os: macos-latest
+            name: macos-arm64
+          - os: windows-latest
+            name: windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential clang cmake pkg-config \
+            libasound2-dev libfontconfig-dev libssl-dev libzstd-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libxcb1-dev libvulkan1
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --release -p nexsh-app -p nexsh-cli 2>&1 | tee build.log
+      - name: Report build errors
+        if: failure()
+        shell: bash
+        run: |
+          body="$(tail -n 40 build.log | tail -c 3500)"
+          body="${body//'%'/'%25'}"
+          body="${body//$'\r'/}"
+          body="${body//$'\n'/'%0A'}"
+          echo "::error title=build log tail::${body}"
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          dir="nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir "$dir"
+          cp target/release/nexsh target/release/nexsh-cli README.md "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+
+      # macOS 打成 .app，双击即可启动；命令行工具放在压缩包根目录。
+      - name: Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dir="nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          app="$dir/nexsh.app"
+          mkdir -p "$app/Contents/MacOS"
+          cp target/release/nexsh "$app/Contents/MacOS/nexsh"
+          cp target/release/nexsh-cli README.md "$dir/"
+          cat > "$app/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>nexsh</string>
+            <key>CFBundleDisplayName</key><string>nexsh</string>
+            <key>CFBundleIdentifier</key><string>dev.nexsh.app</string>
+            <key>CFBundleExecutable</key><string>nexsh</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${version}</string>
+            <key>CFBundleVersion</key><string>${version}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          # 没有开发者证书，用临时签名；Apple 芯片要求可执行文件至少有临时签名。
+          codesign --force --deep --sign - "$app"
+          ditto -c -k --keepParent "$dir" "$dir.zip"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          dir="nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}"
+          mkdir "$dir"
+          cp target/release/nexsh.exe target/release/nexsh-cli.exe README.md "$dir/"
+          7z a "$dir.zip" "$dir"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: package-${{ matrix.name }}
+          path: |
+            nexsh-*.tar.gz
+            nexsh-*.zip
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: package-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum nexsh-* > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          # 1.0 之前的版本都标记为预发布。
+          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          generate_release_notes: true
+          body: |
+            nexsh ${{ github.ref_name }}
+
+            | 平台 | 文件 |
+            |---|---|
+            | Windows (x86_64) | `nexsh-${{ github.ref_name }}-windows-x86_64.zip` |
+            | macOS (Apple 芯片) | `nexsh-${{ github.ref_name }}-macos-arm64.zip` |
+            | Linux (x86_64) | `nexsh-${{ github.ref_name }}-linux-x86_64.tar.gz` |
+
+            每个压缩包里有桌面程序 `nexsh` 和命令行工具 `nexsh-cli`。
+
+            macOS 版本没有 Apple 开发者签名，首次打开需要右键点击 nexsh.app 选择"打开"，
+            或执行 `xattr -dr com.apple.quarantine nexsh.app`。
+
+            已知限制见仓库 README。
