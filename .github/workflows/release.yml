@@ -59,6 +59,26 @@ jobs:
           cp target/release/nexsh target/release/nexsh-cli README.md "$dir/"
           tar -czf "$dir.tar.gz" "$dir"
 
+          # .deb 安装包（Debian / Ubuntu）。
+          version="${GITHUB_REF_NAME#v}"
+          pkg="deb/nexsh"
+          mkdir -p "$pkg/DEBIAN" "$pkg/usr/bin" "$pkg/usr/share/applications"
+          cp target/release/nexsh target/release/nexsh-cli "$pkg/usr/bin/"
+          cp installer/nexsh.desktop "$pkg/usr/share/applications/"
+          cat > "$pkg/DEBIAN/control" <<CONTROL
+          Package: nexsh
+          Version: ${version}
+          Architecture: amd64
+          Maintainer: nexsh <noreply@github.com>
+          Depends: libc6, libfontconfig1, libxkbcommon0, libxcb1, libvulkan1
+          Section: net
+          Priority: optional
+          Homepage: https://github.com/qwkeen101/nexsh
+          Description: GPU-rendered SSH client
+           Native cross-platform SSH client written in Rust.
+          CONTROL
+          dpkg-deb --build --root-owner-group "$pkg" "nexsh-${GITHUB_REF_NAME}-${{ matrix.name }}.deb"
+
       # macOS 打成 .app，双击即可启动；命令行工具放在压缩包根目录。
       - name: Package (macOS)
         if: runner.os == 'macOS'
@@ -91,6 +111,12 @@ jobs:
           codesign --force --deep --sign - "$app"
           ditto -c -k --keepParent "$dir" "$dir.zip"
 
+          # .dmg 安装镜像：打开后把 nexsh 拖进 Applications。
+          mkdir dmg
+          cp -R "$app" dmg/
+          ln -s /Applications dmg/Applications
+          hdiutil create -volname nexsh -srcfolder dmg -ov -format UDZO "$dir.dmg"
+
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
@@ -100,12 +126,27 @@ jobs:
           cp target/release/nexsh.exe target/release/nexsh-cli.exe README.md "$dir/"
           7z a "$dir.zip" "$dir"
 
+      - name: Installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NEXSH_TAG: ${{ github.ref_name }}
+        run: |
+          $env:NEXSH_VERSION = $env:NEXSH_TAG.TrimStart('v')
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
+          & $iscc installer\nexsh.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - uses: actions/upload-artifact@v4
         with:
           name: package-${{ matrix.name }}
           path: |
             nexsh-*.tar.gz
             nexsh-*.zip
+            nexsh-*.deb
+            nexsh-*.dmg
+            nexsh-*-setup.exe
           if-no-files-found: error
 
   release:
@@ -131,15 +172,17 @@ jobs:
           body: |
             nexsh ${{ github.ref_name }}
 
-            | 平台 | 文件 |
-            |---|---|
-            | Windows (x86_64) | `nexsh-${{ github.ref_name }}-windows-x86_64.zip` |
-            | macOS (Apple 芯片) | `nexsh-${{ github.ref_name }}-macos-arm64.zip` |
-            | Linux (x86_64) | `nexsh-${{ github.ref_name }}-linux-x86_64.tar.gz` |
+            | 平台 | 安装包 | 免安装压缩包 |
+            |---|---|---|
+            | Windows (x86_64) | `nexsh-${{ github.ref_name }}-windows-x86_64-setup.exe` | `…-windows-x86_64.zip` |
+            | macOS (Apple 芯片) | `nexsh-${{ github.ref_name }}-macos-arm64.dmg` | `…-macos-arm64.zip` |
+            | Linux (x86_64) | `nexsh-${{ github.ref_name }}-linux-x86_64.deb` | `…-linux-x86_64.tar.gz` |
 
-            每个压缩包里有桌面程序 `nexsh` 和命令行工具 `nexsh-cli`。
+            安装包和压缩包里都有桌面程序 `nexsh` 和命令行工具 `nexsh-cli`。
 
-            macOS 版本没有 Apple 开发者签名，首次打开需要右键点击 nexsh.app 选择"打开"，
-            或执行 `xattr -dr com.apple.quarantine nexsh.app`。
+            - Windows：安装程序没有代码签名，SmartScreen 拦截时点"更多信息 → 仍要运行"。
+            - macOS：没有 Apple 开发者签名，首次打开需要右键点击 nexsh 选择"打开"，
+              或执行 `xattr -dr com.apple.quarantine /Applications/nexsh.app`。
+            - Linux：`sudo apt install ./nexsh-*.deb`。
 
             已知限制见仓库 README。

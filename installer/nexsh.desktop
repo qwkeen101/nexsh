@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=nexsh
+Comment=GPU-rendered SSH client
+Comment[zh_CN]=GPU 渲染的 SSH 客户端
+Exec=nexsh
+Terminal=false
+Categories=Network;RemoteAccess;TerminalEmulator;
