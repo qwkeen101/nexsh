@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexsh-core",
+    "crates/nexsh-term",
+    "crates/nexsh-cli",
+    "crates/nexsh-app",
+]
+# 默认只构建不依赖 GPU/窗口系统的部分；界面用 `cargo build -p nexsh-app`。
+default-members = ["crates/nexsh-core", "crates/nexsh-term", "crates/nexsh-cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+publish = false
+
+[workspace.dependencies]
+nexsh-core = { path = "crates/nexsh-core" }
+nexsh-term = { path = "crates/nexsh-term" }
+
+alacritty_terminal = "0.26"
+anyhow = "1"
+crossterm = "0.29"
+directories = "6"
+gpui = "0.2.2"
+log = "0.4"
+rpassword = "7"
+russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
+toml = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

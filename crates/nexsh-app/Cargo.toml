@@ -1,0 +1,16 @@
+[package]
+name = "nexsh-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nexsh"
+path = "src/main.rs"
+
+[dependencies]
+nexsh-core.workspace = true
+nexsh-term.workspace = true
+gpui.workspace = true
+tokio.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "nexsh-term"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+alacritty_terminal.workspace = true
