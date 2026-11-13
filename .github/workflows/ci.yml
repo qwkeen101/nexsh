@@ -54,7 +54,28 @@ jobs:
             libasound2-dev libfontconfig-dev libssl-dev libzstd-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-xcb-dev libxcb1-dev libvulkan1
-      - run: cargo build --release -p nexsh-app
+      - name: Build
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo build --release -p nexsh-app 2>&1 | tee build.log
+      # 失败时把错误内容输出成标注，不登录也能在任务页面和 API 里看到。
+      - name: Report build errors
+        if: failure()
+        shell: bash
+        run: |
+          report() {
+            local title="$1" body
+            body="$(cat)"
+            [ -z "$body" ] && return
+            body="${body//'%'/'%25'}"
+            body="${body//$'\r'/}"
+            body="${body//$'\n'/'%0A'}"
+            echo "::error title=${title}::${body}"
+          }
+          grep -n -E -A14 '^(error|Error|ERROR)' build.log | head -c 3500 | report "build errors (first)" || true
+          grep -n -E -B2 -A14 '^(error|Error|ERROR)' build.log | tail -c 3500 | report "build errors (last)" || true
+          tail -n 40 build.log | tail -c 3500 | report "build log tail" || true
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
