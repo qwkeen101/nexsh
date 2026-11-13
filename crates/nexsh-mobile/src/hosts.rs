@@ -268,7 +268,7 @@ mod tests {
         };
         // 复制时丢了后半截。
         let cut = message("-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA");
-        assert!(cut.contains("END") && cut.contains("47 个字符"), "{cut}");
+        assert!(cut.contains("END") && cut.contains("48 个字符"), "{cut}");
         // 丢了开头。
         assert!(message("MIIEowIBAAKCAQEA\n-----END RSA PRIVATE KEY-----").contains("BEGIN"));
         // 标记齐全，内容坏了；消息里不能带出内容本身。
