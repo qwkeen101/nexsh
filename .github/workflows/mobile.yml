@@ -1,0 +1,73 @@
+name: Mobile
+
+# 手机端（Android）：把 Rust 核心交叉编译成动态库，再用 Gradle 打出 APK。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "crates/**"
+      - "mobile/**"
+      - "Cargo.toml"
+      - ".github/workflows/mobile.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: never
+
+jobs:
+  android:
+    name: android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+      # arm64 给真机，x86_64 给模拟器。
+      - name: Build Rust core
+        shell: bash
+        run: |
+          set -o pipefail
+          export ANDROID_NDK_HOME="$ANDROID_NDK_LATEST_HOME"
+          cargo ndk -t arm64-v8a -t x86_64 -o mobile/android/app/src/main/jniLibs \
+            build --release -p nexsh-mobile 2>&1 | tee build.log
+      - name: Build APK
+        shell: bash
+        working-directory: mobile/android
+        run: |
+          set -o pipefail
+          gradle --no-daemon --console=plain assembleDebug 2>&1 | tee ../../build.log
+      # 失败时把错误内容输出成标注，不登录也能在任务页面和 API 里看到。
+      - name: Report build errors
+        if: failure()
+        shell: bash
+        run: |
+          report() {
+            local title="$1" body
+            body="$(cat)"
+            [ -z "$body" ] && return
+            body="${body//'%'/'%25'}"
+            body="${body//$'\r'/}"
+            body="${body//$'\n'/'%0A'}"
+            echo "::error title=${title}::${body}"
+          }
+          grep -n -E -A14 '^(error|e: |FAILURE|\* What went wrong)' build.log | head -c 3500 | report "build errors (first)" || true
+          grep -n -E -B2 -A14 '^(error|e: )' build.log | tail -c 3500 | report "build errors (last)" || true
+          tail -n 40 build.log | tail -c 3500 | report "build log tail" || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nexsh-android
+          path: mobile/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

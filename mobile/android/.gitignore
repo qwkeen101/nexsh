@@ -1,0 +1,5 @@
+.gradle/
+build/
+local.properties
+# Rust 核心编译出的动态库，由 CI 生成。
+app/src/main/jniLibs/

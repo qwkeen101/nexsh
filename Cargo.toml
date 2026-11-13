@@ -5,11 +5,12 @@ members = [
     "crates/nexsh-term",
     "crates/nexsh-cli",
     "crates/nexsh-app",
+    "crates/nexsh-mobile",
 ]
 # vendor 下是打过补丁的第三方库，不属于工作区成员。
 exclude = ["vendor"]
 # 默认只构建不依赖 GPU/窗口系统的部分；界面用 `cargo build -p nexsh-app`。
-default-members = ["crates/nexsh-core", "crates/nexsh-term", "crates/nexsh-cli"]
+default-members = ["crates/nexsh-core", "crates/nexsh-term", "crates/nexsh-cli", "crates/nexsh-mobile"]
 
 [workspace.package]
 version = "0.1.8"
@@ -31,6 +32,7 @@ log = "0.4"
 rpassword = "7"
 russh = { version = "0.65", default-features = false, features = ["ring", "rsa", "flate2"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "sync", "macros", "io-util"] }
 toml = "1"
