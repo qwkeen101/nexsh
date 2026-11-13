@@ -66,6 +66,7 @@ pub struct ConnectOptions {
     pub cols: u32,
     pub rows: u32,
     pub password: Option<String>,
+    /// 私钥口令。空字符串表示跳过有口令保护的私钥。
     pub key_passphrase: Option<String>,
     pub host_key_policy: HostKeyPolicy,
     /// 为 None 时使用 `~/.ssh/known_hosts`。
@@ -297,16 +298,30 @@ async fn authenticate(
 
     let mut encrypted_key = None;
     for path in identity_candidates(&options.host) {
-        match keys::load_secret_key(&path, options.key_passphrase.as_deref()) {
+        // 先不带口令读：没加密的私钥不受口令影响，加密的再用口令重试。
+        let loaded = match keys::load_secret_key(&path, None) {
+            Err(keys::Error::KeyIsEncrypted) => match options.key_passphrase.as_deref() {
+                None => {
+                    encrypted_key.get_or_insert(path);
+                    continue;
+                }
+                // 空口令表示用户选择跳过加密的私钥。
+                Some("") => continue,
+                Some(passphrase) => match keys::load_secret_key(&path, Some(passphrase)) {
+                    Ok(key) => Ok(key),
+                    // 口令不对：让调用方重新询问，而不是悄悄改用密码。
+                    Err(_) => return Err(SshError::PassphraseRequired(path)),
+                },
+            },
+            other => other,
+        };
+        match loaded {
             Ok(key) => {
                 let key = PrivateKeyWithHashAlg::new(Arc::new(key), rsa_hash);
                 if handle.authenticate_publickey(user, key).await?.success() {
                     return Ok(());
                 }
                 tried.push(format!("私钥 {}", path.display()));
-            }
-            Err(keys::Error::KeyIsEncrypted) => {
-                encrypted_key.get_or_insert(path);
             }
             Err(error) => tried.push(format!("私钥 {}（{error}）", path.display())),
         }
@@ -320,9 +335,7 @@ async fn authenticate(
     }
 
     // 还有没用上的凭据时，告诉调用方该向用户要什么。
-    if let Some(path) = encrypted_key
-        && options.key_passphrase.is_none()
-    {
+    if let Some(path) = encrypted_key {
         return Err(SshError::PassphraseRequired(path));
     }
     if options.password.is_none() {

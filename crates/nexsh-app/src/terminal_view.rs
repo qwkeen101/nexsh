@@ -10,11 +10,12 @@ use gpui::{
     size,
 };
 use nexsh_core::{
-    ConnectOptions, Host, SessionCommand, SessionEvent, SessionHandle, spawn_session,
+    ConnectOptions, Host, SessionCommand, SessionEvent, SessionHandle, SshError, spawn_session,
 };
 use nexsh_term::{KeyMods, Rgb, TermEvent, Terminal, bracketed_paste, encode_key};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::text_input::TextInput;
 use crate::theme;
 
 const INITIAL_COLS: usize = 80;
@@ -29,9 +30,26 @@ enum Status {
     Failed(String),
 }
 
+/// 连接需要用户补充的凭据。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Secret {
+    Password,
+    Passphrase,
+}
+
+struct Prompt {
+    secret: Secret,
+    message: String,
+}
+
 pub struct TerminalView {
     focus_handle: FocusHandle,
     host: Host,
+    /// 连接参数。用户输入的密码和口令只保存在这里（内存中），用于重连。
+    options: ConnectOptions,
+    /// 正在向用户要密码或口令。
+    prompt: Option<Prompt>,
+    prompt_input: Entity<TextInput>,
     terminal: Terminal,
     commands: UnboundedSender<SessionCommand>,
     status: Status,
@@ -52,8 +70,34 @@ pub struct TerminalView {
 impl TerminalView {
     pub fn new(host: Host, cx: &mut Context<Self>) -> Self {
         let options = ConnectOptions::new(host.clone(), INITIAL_COLS as u32, INITIAL_ROWS as u32);
-        let SessionHandle { commands, mut events } = spawn_session(options);
+        let (commands, reader) = Self::start_session(options.clone(), cx);
+        let prompt_input = cx.new(|cx| TextInput::new("", cx).masked());
 
+        Self {
+            focus_handle: cx.focus_handle(),
+            host,
+            options,
+            prompt: None,
+            prompt_input,
+            terminal: Terminal::new(INITIAL_COLS, INITIAL_ROWS),
+            commands,
+            status: Status::Connecting,
+            title: None,
+            notice: None,
+            composing: None,
+            cursor_bounds: None,
+            line_height: px(theme::FONT_SIZE * theme::LINE_HEIGHT),
+            scroll_remainder: 0.0,
+            _reader: reader,
+        }
+    }
+
+    /// 启动会话，并把它的事件成批送回界面。
+    fn start_session(
+        options: ConnectOptions,
+        cx: &mut Context<Self>,
+    ) -> (UnboundedSender<SessionCommand>, Task<()>) {
+        let SessionHandle { commands, mut events } = spawn_session(options);
         let reader = cx.spawn(async move |this, cx| {
             while let Some(first) = events.recv().await {
                 let mut batch = vec![first];
@@ -73,21 +117,61 @@ impl TerminalView {
                 }
             }
         });
+        (commands, reader)
+    }
 
-        Self {
-            focus_handle: cx.focus_handle(),
-            host,
-            terminal: Terminal::new(INITIAL_COLS, INITIAL_ROWS),
-            commands,
-            status: Status::Connecting,
-            title: None,
-            notice: None,
-            composing: None,
-            cursor_bounds: None,
-            line_height: px(theme::FONT_SIZE * theme::LINE_HEIGHT),
-            scroll_remainder: 0.0,
-            _reader: reader,
+    /// 用当前的连接参数重新连接。旧会话的命令通道随之关闭，会话自行结束。
+    fn reconnect(&mut self, cx: &mut Context<Self>) {
+        let (cols, rows) = self.terminal.size();
+        self.options.cols = cols as u32;
+        self.options.rows = rows as u32;
+        self.terminal = Terminal::new(cols, rows);
+        self.status = Status::Connecting;
+        self.title = None;
+        self.notice = None;
+        self.prompt = None;
+        self.composing = None;
+        let (commands, reader) = Self::start_session(self.options.clone(), cx);
+        self.commands = commands;
+        self._reader = reader;
+        cx.notify();
+    }
+
+    /// 认证失败时，判断是否该向用户要密码或口令。
+    fn prompt_for(&self, error: &SshError) -> Option<Prompt> {
+        match error {
+            SshError::PassphraseRequired(path) => {
+                let retry = if self.options.key_passphrase.is_some() { "口令不正确。" } else { "" };
+                Some(Prompt {
+                    secret: Secret::Passphrase,
+                    message: format!(
+                        "{retry}输入私钥 {} 的口令（留空回车则跳过此私钥）",
+                        path.display()
+                    ),
+                })
+            }
+            SshError::PasswordRequired => Some(Prompt {
+                secret: Secret::Password,
+                message: format!("输入 {} 的密码", self.host.address()),
+            }),
+            SshError::AuthFailed { .. } if self.options.password.is_some() => Some(Prompt {
+                secret: Secret::Password,
+                message: format!("密码不正确，重新输入 {} 的密码", self.host.address()),
+            }),
+            _ => None,
         }
+    }
+
+    fn submit_prompt(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(prompt) = self.prompt.take() else { return };
+        let secret = self.prompt_input.read(cx).text().to_string();
+        self.prompt_input.update(cx, |input, cx| input.clear(cx));
+        match prompt.secret {
+            Secret::Password => self.options.password = Some(secret),
+            Secret::Passphrase => self.options.key_passphrase = Some(secret),
+        }
+        window.focus(&self.focus_handle);
+        self.reconnect(cx);
     }
 
     pub fn tab_title(&self) -> String {
@@ -111,7 +195,10 @@ impl TerminalView {
                     self.send(SessionCommand::Resize { cols: cols as u32, rows: rows as u32 });
                 }
                 SessionEvent::Exited(code) => self.status = Status::Exited(code),
-                SessionEvent::Failed(error) => self.status = Status::Failed(error.to_string()),
+                SessionEvent::Failed(error) => {
+                    self.prompt = self.prompt_for(&error);
+                    self.status = Status::Failed(error.to_string());
+                }
                 SessionEvent::Closed => {
                     if matches!(self.status, Status::Connecting | Status::Connected) {
                         self.status = Status::Exited(None);
@@ -152,22 +239,44 @@ impl TerminalView {
             Status::Connecting => {
                 Some((format!("正在连接 {} ...", self.host.address()), theme::TEXT_MUTED))
             }
-            Status::Failed(message) => Some((message.clone(), theme::ERROR)),
-            Status::Exited(Some(code)) => {
-                Some((format!("会话已结束（退出码 {code}）"), theme::TEXT_MUTED))
+            Status::Failed(message) => {
+                Some((format!("{message}　按回车重新连接"), theme::ERROR))
             }
-            Status::Exited(None) => Some(("连接已断开".to_string(), theme::TEXT_MUTED)),
+            Status::Exited(Some(code)) => Some((
+                format!("会话已结束（退出码 {code}）　按回车重新连接"),
+                theme::TEXT_MUTED,
+            )),
+            Status::Exited(None) => {
+                Some(("连接已断开　按回车重新连接".to_string(), theme::TEXT_MUTED))
+            }
             Status::Connected => self.notice.clone().map(|notice| (notice, theme::NOTICE)),
         }
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // 输入法组合期间，回车、退格等按键属于输入法。
         if self.composing.is_some() {
             return;
         }
         let keystroke = &event.keystroke;
         let modifiers = keystroke.modifiers;
+
+        // 询问密码时，按键归输入框；这里只负责回车提交，其余一律不发往远端。
+        if self.prompt.is_some() {
+            if keystroke.key == "enter" {
+                self.submit_prompt(window, cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
+        // 会话已经结束：回车重新连接，其他按键没有去处。
+        if matches!(self.status, Status::Exited(_) | Status::Failed(_)) {
+            if keystroke.key == "enter" {
+                self.reconnect(cx);
+                cx.stop_propagation();
+            }
+            return;
+        }
 
         // 粘贴：macOS 用 Cmd+V，其他平台用 Ctrl+Shift+V。
         let is_paste = keystroke.key == "v"
@@ -226,7 +335,10 @@ impl TerminalView {
     }
 
     fn on_mouse_down(&mut self, _: &MouseDownEvent, window: &mut Window, _cx: &mut Context<Self>) {
-        window.focus(&self.focus_handle);
+        // 询问密码时焦点留在输入框里。
+        if self.prompt.is_none() {
+            window.focus(&self.focus_handle);
+        }
     }
 }
 
@@ -318,11 +430,40 @@ impl EntityInputHandler for TerminalView {
 }
 
 impl Render for TerminalView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layout_view = cx.entity();
         let paint_view = cx.entity();
         let focus_handle = self.focus_handle.clone();
         let background = theme::color(self.terminal.frame_background());
+
+        // 需要输入密码时，把这个标签页的焦点交给输入框，用户可以直接打字。
+        if self.prompt.is_some() && self.focus_handle.is_focused(window) {
+            let input_focus = self.prompt_input.read(cx).focus_handle(cx);
+            window.focus(&input_focus);
+        }
+        let prompt = self.prompt.as_ref().map(|prompt| {
+            div()
+                .px_2()
+                .py_2()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .flex_shrink_0()
+                .bg(rgb(theme::SIDEBAR_BG))
+                .text_color(rgb(theme::NOTICE))
+                .child(prompt.message.clone())
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(div().w(px(320.)).child(self.prompt_input.clone()))
+                        .child(
+                            div().text_color(rgb(theme::TEXT_MUTED)).child("回车确认"),
+                        ),
+                )
+        });
+        let banner = if prompt.is_some() { None } else { self.banner() };
 
         div()
             .size_full()
@@ -333,7 +474,8 @@ impl Render for TerminalView {
             .on_key_down(cx.listener(Self::on_key_down))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
-            .when_some(self.banner(), |element, (text, color)| {
+            .children(prompt)
+            .when_some(banner, |element, (text, color)| {
                 element.child(
                     div()
                         .px_2()

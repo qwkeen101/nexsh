@@ -41,7 +41,7 @@ macOS 需要 Xcode（含 Metal 工具链），Windows 需要 MSVC 构建工具�
 
 ## 使用
 
-主机来自两处：`nexsh-cli host add` 保存的列表，以及 `~/.ssh/config` 里的具体别名。
+主机来自两处：自己保存的列表（界面侧栏的「+ 添加」，或 `nexsh-cli host add`），以及 `~/.ssh/config` 里的具体别名。
 
 ```sh
 nexsh-cli host add prod deploy@example.com:2222 -i ~/.ssh/prod_key
@@ -50,7 +50,8 @@ nexsh-cli connect prod          # 在当前终端里直接连接
 nexsh-cli connect root@10.0.0.5 # 也可以不保存直接连
 ```
 
-启动 `nexsh` 后在左侧点击主机即可打开终端标签页。
+启动 `nexsh` 后在左侧点击主机即可打开终端标签页；需要密码或私钥口令时，标签页顶部会出现输入框。
+密码和口令只保存在内存里，用于该标签页重连，不写入任何文件。连接断开后按回车重新连接。
 
 认证顺序：ssh-agent、私钥文件（主机指定的，或 `~/.ssh/id_ed25519`、`id_ecdsa`、`id_rsa`）、密码。
 主机密钥按 `~/.ssh/known_hosts` 校验：已知主机直接连接，未知主机首次连接时记住，
@@ -58,8 +59,7 @@ nexsh-cli connect root@10.0.0.5 # 也可以不保存直接连
 
 ## 目前的限制
 
-- 界面里还不能输入密码或私钥口令，只支持 ssh-agent 和无口令私钥；命令行工具支持输入。
-- 界面里还不能添加、编辑主机。
+- 界面里还不能编辑已保存的主机（可以删除后重新添加）。
 - Windows 上尚未接入 ssh-agent。
 - 不支持跳板机（ProxyJump）、主机证书，`~/.ssh/config` 的 `Include` 和 `Match` 被忽略。
 - 终端还没有鼠标选择和复制；粘贴用 Cmd+V（macOS）或 Ctrl+Shift+V。
@@ -67,7 +67,7 @@ nexsh-cli connect root@10.0.0.5 # 也可以不保存直接连
 
 ## 路线
 
-1. 主机管理界面、密码与口令输入、选择与复制。
+1. 主机编辑与分组、选择与复制。
 2. SFTP 和端口转发。
 3. 远端 agent：会话保存在服务器上，断线重连后恢复画面。
 4. 手机端，复用 Rust 核心。
