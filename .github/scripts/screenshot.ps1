@@ -52,9 +52,9 @@ function Shot([string]$name) {
   $bitmap.Save((Join-Path $Out $name), [Drawing.Imaging.ImageFormat]::Png)
   $graphics.Dispose(); $bitmap.Dispose()
 }
-# 坐标相对窗口左上角；标题栏约 31 像素高，左边有约 8 像素的不可见边框。
+# 坐标相对窗口内容区左上角；窗口没有系统标题栏，左边有约 8 像素的不可见边框。
 function Click([int]$x, [int]$y, [switch]$Right) {
-  [Native]::SetCursorPos($rect.Left + 8 + $x, $rect.Top + 31 + $y) | Out-Null
+  [Native]::SetCursorPos($rect.Left + 8 + $x, $rect.Top + $y) | Out-Null
   Start-Sleep -Milliseconds 300
   if ($Right) { [Native]::mouse_event(0x8, 0, 0, 0, [UIntPtr]::Zero); [Native]::mouse_event(0x10, 0, 0, 0, [UIntPtr]::Zero) }
   else { [Native]::mouse_event(0x2, 0, 0, 0, [UIntPtr]::Zero); [Native]::mouse_event(0x4, 0, 0, 0, [UIntPtr]::Zero) }
@@ -62,14 +62,16 @@ function Click([int]$x, [int]$y, [switch]$Right) {
 }
 
 Shot "01-main.png"
-Click 243 19            # 侧栏右上角的加号
+Click 247 19            # 侧栏右上角的加号
 Shot "02-form.png"
 [Windows.Forms.SendKeys]::SendWait("{ESC}")
 Start-Sleep -Seconds 1
-Click 120 126           # 第一个分组里的第一台主机
+Shot "02b-after-esc.png"
+Click 569 616           # Esc 没关掉对话框时点「取消」；已经关掉时这里是空白
+Click 120 130           # 第一个分组里的第一台主机
 Start-Sleep -Seconds 3
 Shot "03-session.png"
-Click 120 158 -Right    # 第二台主机的右键菜单
+Click 120 162 -Right    # 第二台主机的右键菜单
 Shot "04-menu.png"
 
 Stop-Process -Id $process.Id -Force

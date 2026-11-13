@@ -6,7 +6,8 @@ use std::collections::HashSet;
 
 use gpui::{
     ClipboardItem, Context, Div, Entity, FocusHandle, Focusable, KeyDownEvent, MouseButton,
-    MouseDownEvent, Pixels, Point, Subscription, Window, div, prelude::*, px, rgb,
+    MouseDownEvent, Pixels, Point, Subscription, Window, WindowControlArea, div, prelude::*, px,
+    rgb,
 };
 use nexsh_core::secrets::{self, SecretKind};
 use nexsh_core::tree::{self, Row};
@@ -364,7 +365,7 @@ impl Workspace {
         }
     }
 
-    fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_tab_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tabs = self.tabs.iter().enumerate().map(|(index, view)| {
             let active = index == self.active;
             let title = view.read(cx).tab_title();
@@ -382,6 +383,8 @@ impl Workspace {
                 .gap_2()
                 .rounded(px(theme::RADIUS_ITEM))
                 .cursor_pointer()
+                // 标签栏的空白处用来拖动窗口，标签自己要挡在它前面才点得到。
+                .occlude()
                 .text_color(rgb(text_color))
                 .when(active, |tab| tab.bg(rgb(theme::SELECTED_BG)))
                 .when(!active, |tab| tab.hover(|style| style.bg(rgb(theme::HOVER_BG))))
@@ -429,6 +432,7 @@ impl Workspace {
             .justify_center()
             .rounded(px(theme::RADIUS_ITEM))
             .cursor_pointer()
+            .occlude()
             .hover(|style| style.bg(rgb(theme::HOVER_BG)))
             .on_mouse_down(
                 MouseButton::Left,
@@ -436,21 +440,56 @@ impl Workspace {
             )
             .child(icon(Icon::Sidebar, 15., theme::TEXT_MUTED));
 
+        // Windows 上没有系统标题栏，最小化、最大化、关闭画在这里。点击由系统处理：
+        // 这几块区域只是告诉系统"这里是哪个窗口按钮"，贴靠布局之类的系统行为都还在。
+        let caption = cfg!(target_os = "windows").then(|| {
+            let button = |kind: Icon, area: WindowControlArea, hover: u32| {
+                div()
+                    .w(px(44.))
+                    .h_full()
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .justify_center()
+                    .occlude()
+                    .window_control_area(area)
+                    .hover(move |style| style.bg(rgb(hover)))
+                    .child(icon(kind, 13., theme::TEXT_MUTED))
+            };
+            let zoom = if window.is_maximized() { Icon::Restore } else { Icon::Maximize };
+            div()
+                .h_full()
+                .flex()
+                .flex_shrink_0()
+                .child(button(Icon::Minimize, WindowControlArea::Min, theme::HOVER_BG))
+                .child(button(zoom, WindowControlArea::Max, theme::HOVER_BG))
+                .child(button(Icon::Close, WindowControlArea::Close, theme::CLOSE_HOVER))
+        });
+
         div()
             .h(px(theme::BAR_HEIGHT))
             .w_full()
-            .px_2()
             .flex()
             .flex_shrink_0()
-            .items_center()
-            .gap_1()
-            // 标签多到放不下时裁掉，不把窗口撑宽。
-            .overflow_hidden()
             .bg(rgb(theme::SIDEBAR_BG))
             .border_b_1()
             .border_color(rgb(theme::BORDER))
-            .child(sidebar_toggle)
-            .children(tabs)
+            .window_control_area(WindowControlArea::Drag)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    // 标签多到放不下时裁掉，不把窗口撑宽。
+                    .overflow_hidden()
+                    .child(sidebar_toggle)
+                    .children(tabs),
+            )
+            .children(caption)
     }
 
     /// 底部状态栏：当前标签页的连接状态、延迟和终端尺寸。只显示真实测到的值。
@@ -575,7 +614,7 @@ impl Render for Workspace {
                     .h_full()
                     .flex()
                     .flex_col()
-                    .child(self.render_tab_bar(cx))
+                    .child(self.render_tab_bar(window, cx))
                     .child(content)
                     .child(self.render_status_bar(cx)),
             )

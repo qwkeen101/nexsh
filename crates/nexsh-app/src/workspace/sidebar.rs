@@ -1,8 +1,8 @@
 //! 侧栏：搜索框、主机树和右键菜单。
 
 use gpui::{
-    Context, Div, Focusable, FontWeight, MouseButton, MouseDownEvent, Window, div, prelude::*, px,
-    rgb, rgba,
+    Context, Div, Focusable, FontWeight, MouseButton, MouseDownEvent, Window, WindowControlArea, div,
+    prelude::*, px, rgb, rgba,
 };
 use nexsh_core::tree::{self, Row};
 
@@ -25,8 +25,11 @@ const AVATAR_COLORS: [u32; 8] =
     [0x7aa2f7, 0x9ece6a, 0xe0af68, 0xf7768e, 0xbb9af7, 0x7dcfff, 0xff9e64, 0x73daca];
 
 fn avatar(name: &str) -> Div {
-    let hash = name.bytes().fold(0usize, |hash, byte| hash.wrapping_mul(31).wrapping_add(byte as usize));
-    let color = AVATAR_COLORS[hash % AVATAR_COLORS.len()];
+    // FNV-1a，取高位：名字只差一两个字符的主机（web-01、web-02）也能分到不同的颜色。
+    let hash = name
+        .bytes()
+        .fold(0x811c_9dc5_u32, |hash, byte| (hash ^ byte as u32).wrapping_mul(0x0100_0193));
+    let color = AVATAR_COLORS[(hash >> 13) as usize % AVATAR_COLORS.len()];
     let letter = name
         .chars()
         .find(|ch| ch.is_alphanumeric())
@@ -257,6 +260,8 @@ impl Workspace {
                 .justify_center()
                 .rounded(px(theme::RADIUS_ITEM))
                 .cursor_pointer()
+                // 标题这一条用来拖动窗口，按钮要挡在它前面才点得到。
+                .occlude()
                 .hover(|style| style.bg(rgb(theme::HOVER_BG)))
                 .on_mouse_down(
                     MouseButton::Left,
@@ -291,6 +296,7 @@ impl Workspace {
                     .flex_shrink_0()
                     .items_center()
                     .justify_between()
+                    .window_control_area(WindowControlArea::Drag)
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("主机"))
                     .children(add_button),
             )

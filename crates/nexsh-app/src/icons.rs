@@ -18,10 +18,13 @@ pub enum Icon {
     Copy,
     Terminal,
     More,
+    Minimize,
+    Maximize,
+    Restore,
 }
 
 impl Icon {
-    const ALL: [Icon; 12] = [
+    const ALL: [Icon; 15] = [
         Icon::ChevronRight,
         Icon::ChevronDown,
         Icon::Folder,
@@ -34,6 +37,9 @@ impl Icon {
         Icon::Copy,
         Icon::Terminal,
         Icon::More,
+        Icon::Minimize,
+        Icon::Maximize,
+        Icon::Restore,
     ];
 
     fn path(self) -> &'static str {
@@ -50,6 +56,9 @@ impl Icon {
             Icon::Copy => "icons/copy.svg",
             Icon::Terminal => "icons/terminal.svg",
             Icon::More => "icons/more.svg",
+            Icon::Minimize => "icons/minimize.svg",
+            Icon::Maximize => "icons/maximize.svg",
+            Icon::Restore => "icons/restore.svg",
         }
     }
 
@@ -73,6 +82,11 @@ impl Icon {
             Icon::Terminal => r#"<path d="M5 7l5 5-5 5M12 17h7"/>"#,
             Icon::More => {
                 r#"<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>"#
+            }
+            Icon::Minimize => r#"<path d="M4 12h16"/>"#,
+            Icon::Maximize => r#"<rect x="4" y="4" width="16" height="16" rx="1"/>"#,
+            Icon::Restore => {
+                r#"<rect x="4" y="8" width="12" height="12" rx="1"/><path d="M8 8V4h12v12h-4"/>"#
             }
         }
     }

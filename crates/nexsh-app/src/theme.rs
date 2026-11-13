@@ -16,6 +16,8 @@ pub const TEXT: u32 = 0xe4e4e8;
 pub const TEXT_MUTED: u32 = 0x9a9aa4;
 /// 比 TEXT_MUTED 更淡：计数、页脚这类可有可无的信息。
 pub const TEXT_FAINT: u32 = 0x6b6b76;
+/// 关闭按钮悬停时的红色，和系统窗口按钮一致。
+pub const CLOSE_HOVER: u32 = 0xc42b1c;
 pub const SUCCESS: u32 = 0x9ece6a;
 pub const ERROR: u32 = 0xf7768e;
 pub const NOTICE: u32 = 0xe0af68;

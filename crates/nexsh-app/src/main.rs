@@ -31,6 +31,9 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
                     title: Some("nexsh".into()),
+                    // Windows 上不要系统那条白色标题栏：窗口按钮画在标签栏右端，
+                    // 标签栏和侧栏标题的空白处可以拖动窗口。
+                    appears_transparent: cfg!(target_os = "windows"),
                     ..Default::default()
                 }),
                 ..Default::default()
