@@ -90,9 +90,12 @@ sleep 3
 shot m08-typed
 
 # 停掉 sshd 并踢掉已有的会话：应用应当发现断线并开始重连。
+# 会话进程在新版 OpenSSH 里叫 sshd-session，旧版叫 sshd，两种都匹配；进程列表留作排查。
+{ echo "== before"; ps -eo pid,args | grep -i "[s]shd"; } > shots/sshd.txt
 sudo systemctl stop ssh.socket ssh.service
-sudo pkill -f "sshd: $(id -un)"
+sudo pkill -f "sshd[a-z-]*: $(id -un)"
 sleep 4
+{ echo "== after"; ps -eo pid,args | grep -i "[s]shd"; } >> shots/sshd.txt
 shot m09-reconnecting
 
 # sshd 回来之后，下一次重连应当成功，回到"已连接"。

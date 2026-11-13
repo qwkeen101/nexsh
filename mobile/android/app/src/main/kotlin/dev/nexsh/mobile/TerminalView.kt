@@ -140,6 +140,9 @@ class TerminalView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        // 嵌在 Compose 里的控件拿到的画布不按自己的边界裁剪；不裁的话下面的整屏填色会盖掉
+        // 终端上方的标题栏和提示条。
+        canvas.clipRect(0, 0, width, height)
         val frame = frame
         if (frame == null) {
             canvas.drawColor(DEFAULT_BACKGROUND)
