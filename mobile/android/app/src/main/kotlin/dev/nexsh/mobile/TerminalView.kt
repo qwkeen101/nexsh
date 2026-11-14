@@ -75,7 +75,17 @@ class TerminalView(context: Context) : View(context) {
     private var baseline = 0f
     private var scrollRemainder = 0f
 
-    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = Typeface.MONOSPACE }
+    // 终端字体随应用带着，不用系统的"等宽字体"：不少手机的主题和字体替换会把它换成比例字体，
+    // 那样每个字宽度不一，按格子排出来的画面全是散的。读不到时才退回系统的。
+    private val regularFace = loadFace("fonts/JetBrainsMonoNL-Regular.ttf")
+    private val boldFace = loadFace("fonts/JetBrainsMonoNL-Bold.ttf")
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { typeface = regularFace ?: Typeface.MONOSPACE }
+
+    /** 当前字体是不是真的等宽。不是的话（退回了系统字体）每个字符都单独按列定位。 */
+    private var monospaced = true
+
+    private fun loadFace(path: String): Typeface? =
+        runCatching { Typeface.createFromAsset(context.assets, path) }.getOrNull()
     private val fillPaint = Paint()
     private val run = StringBuilder()
 
@@ -143,6 +153,7 @@ class TerminalView(context: Context) : View(context) {
             TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, fontSizeSp, resources.displayMetrics)
         val metrics = textPaint.fontMetrics
         cellWidth = max(1f, textPaint.measureText("M"))
+        monospaced = textPaint.measureText("i") == cellWidth && textPaint.measureText("iiii") == cellWidth * 4
         cellHeight = max(1f, ceil(metrics.descent - metrics.ascent))
         baseline = -metrics.ascent
         applyGrid()
@@ -228,7 +239,7 @@ class TerminalView(context: Context) : View(context) {
             val color = frame.fg(index)
             // 选中与否不影响文字怎么画，去掉这一位，免得选区边界把一段文字拆开。
             val attrs = frame.attrs(index) and Frame.SELECTED.inv()
-            val joins = char < 0x80 && run.isNotEmpty() && row == runRow &&
+            val joins = monospaced && char < 0x80 && run.isNotEmpty() && row == runRow &&
                 col == runCol + run.length && color == runColor && attrs == runAttrs
             if (!joins) {
                 flush()
@@ -323,7 +334,10 @@ class TerminalView(context: Context) : View(context) {
 
     private fun drawText(canvas: Canvas, text: CharSequence, row: Int, col: Int, color: Int, attrs: Int) {
         textPaint.color = color
-        textPaint.isFakeBoldText = attrs and Frame.BOLD != 0
+        val bold = attrs and Frame.BOLD != 0
+        // 有真正的粗体字形就用它；没有时让系统描粗。
+        textPaint.typeface = (if (bold) boldFace else null) ?: regularFace ?: Typeface.MONOSPACE
+        textPaint.isFakeBoldText = bold && boldFace == null
         textPaint.textSkewX = if (attrs and Frame.ITALIC != 0) -0.2f else 0f
         textPaint.isUnderlineText = attrs and Frame.UNDERLINE != 0
         textPaint.isStrikeThruText = attrs and Frame.STRIKEOUT != 0
