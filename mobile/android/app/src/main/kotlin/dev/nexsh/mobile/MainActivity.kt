@@ -185,6 +185,7 @@ private fun App(startError: String, secrets: Secrets) {
                 }
             }
         }
+        UpdatePrompt(visible = screen == Screen.Hosts)
         if (error.isNotEmpty()) {
             Text(
                 error,

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用内更新下载的安装包放在缓存目录的 updates 下，只把这一个目录交给系统的安装程序读。 -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>
