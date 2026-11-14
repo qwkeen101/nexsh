@@ -422,21 +422,73 @@ class TerminalView(context: Context) : View(context) {
 
     // ---- 输入 ----
 
-    /** 输入法提交的文字，以及按键栏上的符号键。 */
-    fun sendText(text: String) {
+    // 输入法在自己的缓冲区里编辑文字，终端里对应的是已经发给远端的字符。mirrored 记着缓冲区里
+    // 哪些文字已经发出去了：缓冲区一变，就按差异补发——删掉的发退格，新增的发文字。
+    // 很多输入法（尤其是中英混输时）每按一个键都把前面的字母重新标成"组词中"，再用更长的一串
+    // 整体替换；提交后就清空缓冲区的话，这种替换会变成追加，敲 claude 得到 cclclaclau…。
+    private var mirrored = ""
+    private var connection: BaseInputConnection? = null
+
+    /** 不经过输入法缓冲区的输入（功能键、按键栏、粘贴）发生了：缓冲区和终端里的行不再对应，从头记。 */
+    private fun forgetTyped() {
+        val content = connection?.editable
+        if (mirrored.isEmpty() && content.isNullOrEmpty()) return
+        mirrored = ""
+        content?.clear()
+        // 告诉输入法光标回到了开头、没有组词中的文字，它自己缓存的"光标前的文字"也该作废。
+        val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        manager.updateSelection(this, 0, 0, -1, -1)
+    }
+
+    private fun rawText(text: String) {
         if (text.isEmpty() || sessionId == 0L) return
         Bridge.text(sessionId, text, modifiers())
         onModifiersUsed()
     }
 
-    /** 按键栏和实体键盘上的功能键。 */
-    fun sendKey(name: String, extraModifiers: Int = 0) {
+    private fun rawKey(name: String, extraModifiers: Int = 0) {
         if (sessionId == 0L) return
         Bridge.key(sessionId, name, modifiers() or extraModifiers)
         onModifiersUsed()
     }
 
+    /** 把缓冲区现在的内容和已经发出去的对齐。组词还没结束时不动：拼音不该先发给远端。 */
+    private fun syncTyped() {
+        val content = connection?.editable ?: return
+        val composingStart = BaseInputConnection.getComposingSpanStart(content)
+        val composingEnd = BaseInputConnection.getComposingSpanEnd(content)
+        if (composingStart >= 0 && composingEnd > composingStart) return
+        val text = content.toString()
+        var same = 0
+        while (same < text.length && same < mirrored.length && text[same] == mirrored[same]) same++
+        // 不从一个代理对的中间切开。
+        if (same > 0 && Character.isHighSurrogate(text[same - 1])) same--
+        // 按住了 Ctrl/Alt 时这次发出去的是组合键，不是文字。
+        val chord = modifiers() != 0
+        repeat(mirrored.codePointCount(same, mirrored.length)) { rawKey("backspace") }
+        val fresh = text.substring(same)
+        // 有些输入法把回车当作文字提交。
+        val newline = fresh == "\n"
+        if (newline) rawKey("enter") else rawText(fresh)
+        mirrored = text
+        // 回车之后是新的一行；缓冲区也不必无限长下去。
+        if (newline || chord || text.length > MIRROR_LIMIT) forgetTyped()
+    }
+
+    /** 按键栏上的符号键。 */
+    fun sendText(text: String) {
+        forgetTyped()
+        rawText(text)
+    }
+
+    /** 按键栏和实体键盘上的功能键。 */
+    fun sendKey(name: String, extraModifiers: Int = 0) {
+        forgetTyped()
+        rawKey(name, extraModifiers)
+    }
+
     fun paste(text: String) {
+        forgetTyped()
         if (sessionId != 0L) Bridge.paste(sessionId, text)
     }
 
@@ -452,35 +504,37 @@ class TerminalView(context: Context) : View(context) {
         attributes.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
         // 给输入法一个真正的编辑缓冲区（fullEditor = true）：组词、替换、提交都由框架在缓冲区上
-        // 按标准语义完成，这里只在文字定下来时把缓冲区里的内容发给远端并清空。输入法随时会回头
-        // 查询自己刚写进去的内容；面对一个永远是空的编辑器，有的输入法会以为没写成而再提交一次。
-        return object : BaseInputConnection(this, true) {
-            private fun flush() {
-                val content = editable ?: return
-                val text = content.toString()
-                content.clear()
-                // 有些输入法把回车当作文字提交。
-                if (text == "\n") sendKey("enter") else sendText(text)
-            }
-
+        // 按标准语义完成，这里只管把缓冲区的变化翻译成发给远端的退格和文字（见 syncTyped）。
+        mirrored = ""
+        val created = object : BaseInputConnection(this, true) {
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
                 super.commitText(text, newCursorPosition)
-                flush()
+                syncTyped()
+                return true
+            }
+
+            override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+                super.setComposingText(text, newCursorPosition)
+                syncTyped()
                 return true
             }
 
             // 组词结束（选了字、切走了焦点）：缓冲区里剩下的就是最终的文字。
             override fun finishComposingText(): Boolean {
                 super.finishComposingText()
-                flush()
+                syncTyped()
                 return true
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                // 缓冲区里有还在组词的文字时，删的是它；否则是要终端退格。
-                if (!editable.isNullOrEmpty()) return super.deleteSurroundingText(beforeLength, afterLength)
-                repeat(beforeLength) { sendKey("backspace") }
-                repeat(afterLength) { sendKey("delete") }
+                // 缓冲区里有字时删的是它（再由 syncTyped 变成退格）；空的时候直接让终端删。
+                if (editable.isNullOrEmpty()) {
+                    repeat(beforeLength) { rawKey("backspace") }
+                    repeat(afterLength) { rawKey("delete") }
+                    return true
+                }
+                super.deleteSurroundingText(beforeLength, afterLength)
+                syncTyped()
                 return true
             }
 
@@ -489,6 +543,8 @@ class TerminalView(context: Context) : View(context) {
                 return true
             }
         }
+        connection = created
+        return created
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean =
@@ -517,6 +573,15 @@ class TerminalView(context: Context) : View(context) {
             in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> "f" + (event.keyCode - KeyEvent.KEYCODE_F1 + 1)
             else -> null
         }
+        if (name == "backspace" && held == 0 && modifiers() == 0 && mirrored.isNotEmpty()) {
+            // 输入法用按键事件发来的退格：缓冲区里也删掉最后一个字，两边保持一致。
+            val content = connection?.editable
+            val cut = mirrored.offsetByCodePoints(mirrored.length, -1)
+            if (content != null && content.toString() == mirrored) content.delete(cut, content.length)
+            mirrored = mirrored.substring(0, cut)
+            rawKey(name)
+            return true
+        }
         if (name != null) {
             sendKey(name, held)
             return true
@@ -524,6 +589,7 @@ class TerminalView(context: Context) : View(context) {
         // 可打印字符。取不带 Ctrl/Alt 的字符，修饰键交给核心去编码（Ctrl+C 变成 0x03 等）。
         val char = event.getUnicodeChar(event.metaState and (KeyEvent.META_SHIFT_MASK or KeyEvent.META_CAPS_LOCK_ON))
         if (char == 0 || sessionId == 0L) return false
+        forgetTyped()
         Bridge.text(sessionId, String(Character.toChars(char)), modifiers() or (held and Bridge.SHIFT.inv()))
         onModifiersUsed()
         return true
@@ -535,5 +601,6 @@ class TerminalView(context: Context) : View(context) {
         private const val HANDLE_COLOR = 0xff6c9cf5.toInt()
         private const val NO_END = -1
         private const val RESIZE_SETTLE_MS = 120L
+        private const val MIRROR_LIMIT = 200
     }
 }
