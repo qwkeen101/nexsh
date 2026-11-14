@@ -1,0 +1,2 @@
+  * ServiceRecord{c05f7fc u0 dev.nexsh.mobile/.KeepAliveService}
+    isForeground=true foregroundId=1 types=40000000 foregroundNoti=Notification(channel=sessions shortcut=null contentView=null vibrate=null sound=null defaults=0x0 flags=0x62 color=0x00000000 actions=1 vis=PRIVATE)

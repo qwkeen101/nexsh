@@ -1,0 +1,143 @@
+--------- beginning of main
+11-14 02:35:35.059   504  2066 W system_server: Long monitor contention with owner android.anim (527) at android.content.res.Configuration com.android.server.wm.ActivityTaskManagerService.getGlobalConfigurationForPid(int)(ActivityTaskManagerService.java:1133) waiters=2 in int com.android.server.wm.ActivityStarter.execute() for 113ms
+--------- beginning of system
+11-14 02:35:35.060   504  2066 W ActivityTaskManager: callingPackage for (uid=2000, pid=2754) has no WPC
+11-14 02:35:35.099   794   825 W Looper  : Drained
+11-14 02:35:35.099   794   825 W Looper  : Slow dispatch took 70ms wmshell.main h=android.os.Handler c=com.android.wm.shell.transition.Transitions$TransitionPlayerImpl$$ExternalSyntheticLambda0@6f63a37 m=0
+11-14 02:35:35.099   794   825 W Looper  : Slow delivery took 68ms wmshell.main h=android.os.Handler c=android.window.TaskOrganizer$1$$ExternalSyntheticLambda3@a1dbba4 m=0
+11-14 02:35:35.134   794   825 W Looper  : Slow dispatch took 34ms wmshell.main h=android.os.Handler c=android.window.TaskOrganizer$1$$ExternalSyntheticLambda8@9fadb3c m=0
+11-14 02:35:35.143   504   527 W WindowManager: Failed to deliver inset control state change to w=Window{c660658 u0 dev.nexsh.mobile/dev.nexsh.mobile.MainActivity EXITING}
+11-14 02:35:35.143   504   527 W WindowManager: android.os.DeadObjectException
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.os.BinderProxy.transactNative(Native Method)
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.os.BinderProxy.transact(BinderProxy.java:584)
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.view.IWindow$Stub$Proxy.insetsControlChanged(IWindow.java:479)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.WindowState.notifyInsetsControlChanged(WindowState.java:3802)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.InsetsStateController.lambda$notifyPendingInsetsControlChanged$3(InsetsStateController.java:343)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.InsetsStateController.$r8$lambda$8yykPRG1GyNq_J17QvL9d5xANMc(InsetsStateController.java:0)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.InsetsStateController$$ExternalSyntheticLambda2.run(R8$$SyntheticClass:0)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.WindowAnimator.executeAfterPrepareSurfacesRunnables(WindowAnimator.java:294)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.RootWindowContainer.performSurfacePlacementNoTrace(RootWindowContainer.java:811)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.RootWindowContainer.performSurfacePlacement(RootWindowContainer.java:756)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.WindowSurfacePlacer.performSurfacePlacementLoop(WindowSurfacePlacer.java:177)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.WindowSurfacePlacer.performSurfacePlacement(WindowSurfacePlacer.java:126)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.WindowSurfacePlacer.performSurfacePlacement(WindowSurfacePlacer.java:115)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.wm.WindowSurfacePlacer$Traverser.run(WindowSurfacePlacer.java:57)
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.os.Handler.handleCallback(Handler.java:958)
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.os.Handler.dispatchMessage(Handler.java:99)
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.os.Looper.loopOnce(Looper.java:205)
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.os.Looper.loop(Looper.java:294)
+11-14 02:35:35.143   504   527 W WindowManager: 	at android.os.HandlerThread.run(HandlerThread.java:67)
+11-14 02:35:35.143   504   527 W WindowManager: 	at com.android.server.ServiceThread.run(ServiceThread.java:46)
+11-14 02:35:35.281  2757  2757 W ev.nexsh.mobile: Unexpected CPU variant for x86: x86_64.
+11-14 02:35:35.281  2757  2757 W ev.nexsh.mobile: Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, tremont, kabylake, default
+11-14 02:35:35.295   504   897 W WindowManager: Exception thrown during dispatchAppVisibility Window{c660658 u0 dev.nexsh.mobile/dev.nexsh.mobile.MainActivity EXITING}
+11-14 02:35:35.295   504   897 W WindowManager: android.os.DeadObjectException
+11-14 02:35:35.295   504   897 W WindowManager: 	at android.os.BinderProxy.transactNative(Native Method)
+11-14 02:35:35.295   504   897 W WindowManager: 	at android.os.BinderProxy.transact(BinderProxy.java:584)
+11-14 02:35:35.295   504   897 W WindowManager: 	at android.view.IWindow$Stub$Proxy.dispatchAppVisibility(IWindow.java:546)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.WindowState.sendAppVisibilityToClients(WindowState.java:3271)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.sendAppVisibilityToClients(WindowContainer.java:1221)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.WindowToken.setClientVisible(WindowToken.java:409)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.ActivityRecord.setClientVisible(ActivityRecord.java:6946)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.ActivityRecord.postApplyAnimation(ActivityRecord.java:5637)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.ActivityRecord.commitVisibility(ActivityRecord.java:5580)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.Transition.finishTransition(Transition.java:1151)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.TransitionController.finishTransition(TransitionController.java:868)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.finishTransition(WindowOrganizerController.java:396)
+11-14 02:35:35.295   504   897 W WindowManager: 	at android.window.IWindowOrganizerController$Stub.onTransact(IWindowOrganizerController.java:286)
+11-14 02:35:35.295   504   897 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.onTransact(WindowOrganizerController.java:181)
+11-14 02:35:35.295   504   897 W WindowManager: 	at android.os.Binder.execTransactInternal(Binder.java:1344)
+11-14 02:35:35.295   504   897 W WindowManager: 	at android.os.Binder.execTransact(Binder.java:1275)
+11-14 02:35:35.298   504   897 W WindowManager: Failed to deliver inset control state change to w=Window{c660658 u0 dev.nexsh.mobile/dev.nexsh.mobile.MainActivity EXITING}
+11-14 02:35:35.298   504   897 W WindowManager: android.os.DeadObjectException
+11-14 02:35:35.298   504   897 W WindowManager: 	at android.os.BinderProxy.transactNative(Native Method)
+11-14 02:35:35.298   504   897 W WindowManager: 	at android.os.BinderProxy.transact(BinderProxy.java:584)
+11-14 02:35:35.298   504   897 W WindowManager: 	at android.view.IWindow$Stub$Proxy.insetsControlChanged(IWindow.java:479)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowState.notifyInsetsControlChanged(WindowState.java:3802)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.InsetsStateController.lambda$notifyPendingInsetsControlChanged$3(InsetsStateController.java:343)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.InsetsStateController.$r8$lambda$8yykPRG1GyNq_J17QvL9d5xANMc(InsetsStateController.java:0)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.InsetsStateController$$ExternalSyntheticLambda2.run(R8$$SyntheticClass:0)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowAnimator.executeAfterPrepareSurfacesRunnables(WindowAnimator.java:294)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.RootWindowContainer.performSurfacePlacementNoTrace(RootWindowContainer.java:811)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.RootWindowContainer.performSurfacePlacement(RootWindowContainer.java:756)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowSurfacePlacer.performSurfacePlacementLoop(WindowSurfacePlacer.java:177)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowSurfacePlacer.performSurfacePlacement(WindowSurfacePlacer.java:126)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowSurfacePlacer.performSurfacePlacement(WindowSurfacePlacer.java:115)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowState.setupWindowForRemoveOnExit(WindowState.java:2538)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowState.removeIfPossible(WindowState.java:2498)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowToken.removeAllWindowsIfPossible(WindowToken.java:249)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.ActivityRecord.removeIfPossible(ActivityRecord.java:4259)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.ActivityRecord.handleCompleteDeferredRemoval(ActivityRecord.java:4266)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.handleCompleteDeferredRemoval(WindowContainer.java:1396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.TaskFragment.handleCompleteDeferredRemoval(TaskFragment.java:2844)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.handleCompleteDeferredRemoval(WindowContainer.java:1396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.handleCompleteDeferredRemoval(WindowContainer.java:1396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.handleCompleteDeferredRemoval(WindowContainer.java:1396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.handleCompleteDeferredRemoval(WindowContainer.java:1396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.handleCompleteDeferredRemoval(WindowContainer.java:1396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowContainer.handleCompleteDeferredRemoval(WindowContainer.java:1396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.DisplayContent.handleCompleteDeferredRemoval(DisplayContent.java:3382)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.Transition.finishTransition(Transition.java:1322)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.TransitionController.finishTransition(TransitionController.java:868)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.finishTransition(WindowOrganizerController.java:396)
+11-14 02:35:35.298   504   897 W WindowManager: 	at android.window.IWindowOrganizerController$Stub.onTransact(IWindowOrganizerController.java:286)
+11-14 02:35:35.298   504   897 W WindowManager: 	at com.android.server.wm.WindowOrganizerController.onTransact(WindowOrganizerController.java:181)
+11-14 02:35:35.298   504   897 W WindowManager: 	at android.os.Binder.execTransactInternal(Binder.java:1344)
+11-14 02:35:35.298   504   897 W WindowManager: 	at android.os.Binder.execTransact(Binder.java:1275)
+11-14 02:35:35.301   504   526 W ActivityManager: setHasOverlayUi called on unknown pid: 2591
+11-14 02:35:35.302   794   825 W Looper  : Slow dispatch took 168ms wmshell.main h=android.os.Handler c=com.android.wm.shell.transition.DefaultTransitionHandler$$ExternalSyntheticLambda7@32fbde6 m=0
+11-14 02:35:35.303   794   825 W Looper  : Drained
+11-14 02:35:35.548   794   840 W Looper  : Slow delivery took 30ms wmshell.anim h=android.view.Choreographer$FrameHandler c=android.view.Choreographer$FrameDisplayEventReceiver@1c3ce50 m=0
+11-14 02:35:35.569   390   390 E BpTransactionCompletedListener: Failed to transact (-32)
+11-14 02:35:35.605  2757  2757 W ziparchive: Unable to open '/data/app/~~L4s2rH2tntVPBWWSdsOAmg==/dev.nexsh.mobile-xKe4j3Kkm-oxR0QzyBSfBg==/base.dm': No such file or directory
+11-14 02:35:35.606  2757  2757 W ziparchive: Unable to open '/data/app/~~L4s2rH2tntVPBWWSdsOAmg==/dev.nexsh.mobile-xKe4j3Kkm-oxR0QzyBSfBg==/base.dm': No such file or directory
+11-14 02:35:35.891  2757  2757 W OpenGLRenderer: Unknown dataspace 0
+11-14 02:35:36.000  2757  2757 W ev.nexsh.mobile: Method boolean androidx.compose.runtime.snapshots.SnapshotStateList.conditionalUpdate(boolean, kotlin.jvm.functions.Function1) failed lock verification and will run slower.
+11-14 02:35:36.000  2757  2757 W ev.nexsh.mobile: Common causes for lock verification issues are non-optimized dex code
+11-14 02:35:36.000  2757  2757 W ev.nexsh.mobile: and incorrect proguard optimizations.
+11-14 02:35:36.000  2757  2757 W ev.nexsh.mobile: Method boolean androidx.compose.runtime.snapshots.SnapshotStateList.conditionalUpdate$default(androidx.compose.runtime.snapshots.SnapshotStateList, boolean, kotlin.jvm.functions.Function1, int, java.lang.Object) failed lock verification and will run slower.
+11-14 02:35:36.000  2757  2757 W ev.nexsh.mobile: Method java.lang.Object androidx.compose.runtime.snapshots.SnapshotStateList.mutate(kotlin.jvm.functions.Function1) failed lock verification and will run slower.
+11-14 02:35:36.000  2757  2757 W ev.nexsh.mobile: Method void androidx.compose.runtime.snapshots.SnapshotStateList.update(boolean, kotlin.jvm.functions.Function1) failed lock verification and will run slower.
+11-14 02:35:36.000  2757  2757 W ev.nexsh.mobile: Method void androidx.compose.runtime.snapshots.SnapshotStateList.update$default(androidx.compose.runtime.snapshots.SnapshotStateList, boolean, kotlin.jvm.functions.Function1, int, java.lang.Object) failed lock verification and will run slower.
+11-14 02:35:36.132  2757  2775 W OpenGLRenderer: Failed to initialize 101010-2 format, error = EGL_SUCCESS
+11-14 02:35:36.545   504   523 W ziparchive: Unable to open '/data/app/~~L4s2rH2tntVPBWWSdsOAmg==/dev.nexsh.mobile-xKe4j3Kkm-oxR0QzyBSfBg==/base.dm': No such file or directory
+11-14 02:35:36.563   794   845 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@d141f27
+11-14 02:35:36.564   504  2066 W InputManager-JNI: Input channel object '6af4103 Splash Screen dev.nexsh.mobile (client)' was disposed without first being removed with the input manager!
+11-14 02:35:39.089   504  1900 E TaskPersister: File error accessing recents directory (directory doesn't exist?).
+11-14 02:35:41.662  2757  2757 W WindowOnBackDispatcher: OnBackInvokedCallback is not enabled for the application.
+11-14 02:35:41.662  2757  2757 W WindowOnBackDispatcher: Set 'android:enableOnBackInvokedCallback="true"' in the application manifest.
+11-14 02:35:43.641   504   897 W ProcessStats: Tracking association SourceState{ae5611f system/1000 BFgs #663} whose proc state 4 is better than process ProcessState{98336ad com.android.inputmethod.latin/10108 pkg=com.android.inputmethod.latin} proc state 6 (2 skipped)
+11-14 02:35:45.415  2757  2767 W System  : A resource failed to call release. 
+--------- beginning of kernel
+11-14 02:35:52.666     0     0 W healthd : battery l=100 v=5000 t=25.0 h=2 st=2 c=900000 fc=3000000 cc=10 chg=a
+11-14 02:35:54.146  2757  2757 E FrameTracker: force finish cuj, time out: J<IME_INSETS_ANIMATION::0@1@dev.nexsh.mobile>
+11-14 02:36:01.971   504   897 W InputDispatcher: Excessive delay in interceptKeyBeforeQueueing; took 52 ms
+11-14 02:36:52.664     0     0 W healthd : battery l=100 v=5000 t=25.0 h=2 st=2 c=900000 fc=3000000 cc=10 chg=a
+11-14 02:37:11.240  2947  2947 W BpBinder: Linking to death on android.gui.ISurfaceComposer but there are no threads (yet?) listening to incoming transactions. See ProcessState::startThreadPool and ProcessState::setThreadPoolMaxThreadCount. Generally you should setup the binder threadpool before other initialization steps.
+11-14 02:37:11.240  2947  2947 W ProcessState: Extra binder thread started, but 0 threads requested. Do not use *startThreadPool when zero threads are requested.
+11-14 02:37:12.581   794   794 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@a9cb91c
+11-14 02:37:12.592   504   897 W InputManager-JNI: Input channel object 'fcc233e ClipboardOverlay (client)' was disposed without first being removed with the input manager!
+11-14 02:37:12.603   504   897 W InputManager-JNI: Input channel object '[Gesture Monitor] clipboard overlay (client)' was disposed without first being removed with the input manager!
+11-14 02:37:13.726  2757  2757 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=falsecallback=ImeCallback=ImeOnBackInvokedCallback@93877635 Callback=android.window.IOnBackInvokedCallback$Stub$Proxy@6d7e6a9
+11-14 02:37:14.787  2994  2994 W BpBinder: Linking to death on android.gui.ISurfaceComposer but there are no threads (yet?) listening to incoming transactions. See ProcessState::startThreadPool and ProcessState::setThreadPoolMaxThreadCount. Generally you should setup the binder threadpool before other initialization steps.
+11-14 02:37:14.787  2994  2994 W ProcessState: Extra binder thread started, but 0 threads requested. Do not use *startThreadPool when zero threads are requested.
+11-14 02:37:16.014  2757  2757 W WindowOnBackDispatcher: OnBackInvokedCallback is not enabled for the application.
+11-14 02:37:16.014  2757  2757 W WindowOnBackDispatcher: Set 'android:enableOnBackInvokedCallback="true"' in the application manifest.
+11-14 02:37:18.025  2757  2757 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@dd543b0
+11-14 02:37:18.029   504   567 W InputManager-JNI: Input channel object 'add4c13 dev.nexsh.mobile/dev.nexsh.mobile.MainActivity (client)' was disposed without first being removed with the input manager!
+11-14 02:37:18.035  2757  2757 W WindowOnBackDispatcher: OnBackInvokedCallback is not enabled for the application.
+11-14 02:37:18.035  2757  2757 W WindowOnBackDispatcher: Set 'android:enableOnBackInvokedCallback="true"' in the application manifest.
+11-14 02:37:20.079  3015  3015 W BpBinder: Linking to death on android.gui.ISurfaceComposer but there are no threads (yet?) listening to incoming transactions. See ProcessState::startThreadPool and ProcessState::setThreadPoolMaxThreadCount. Generally you should setup the binder threadpool before other initialization steps.
+11-14 02:37:20.079  3015  3015 W ProcessState: Extra binder thread started, but 0 threads requested. Do not use *startThreadPool when zero threads are requested.
+11-14 02:37:20.270  2757  2757 W WindowOnBackDispatcher: sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@37f5050
+11-14 02:37:20.275   504   567 W InputManager-JNI: Input channel object 'fddca6b dev.nexsh.mobile/dev.nexsh.mobile.MainActivity (client)' was disposed without first being removed with the input manager!
+11-14 02:37:22.325  3027  3027 W BpBinder: Linking to death on android.gui.ISurfaceComposer but there are no threads (yet?) listening to incoming transactions. See ProcessState::startThreadPool and ProcessState::setThreadPoolMaxThreadCount. Generally you should setup the binder threadpool before other initialization steps.
+11-14 02:37:22.325  3027  3027 W ProcessState: Extra binder thread started, but 0 threads requested. Do not use *startThreadPool when zero threads are requested.
+11-14 02:37:24.169  2757  2757 E FrameTracker: force finish cuj, time out: J<IME_INSETS_ANIMATION::1@1@dev.nexsh.mobile>
+11-14 02:37:24.574  3036  3036 W BpBinder: Linking to death on android.gui.ISurfaceComposer but there are no threads (yet?) listening to incoming transactions. See ProcessState::startThreadPool and ProcessState::setThreadPoolMaxThreadCount. Generally you should setup the binder threadpool before other initialization steps.
+11-14 02:37:24.574  3036  3036 W ProcessState: Extra binder thread started, but 0 threads requested. Do not use *startThreadPool when zero threads are requested.
+11-14 02:37:24.782  2757  2757 W WindowOnBackDispatcher: OnBackInvokedCallback is not enabled for the application.
+11-14 02:37:24.782  2757  2757 W WindowOnBackDispatcher: Set 'android:enableOnBackInvokedCallback="true"' in the application manifest.
+11-14 02:37:25.148   504   504 W NotificationHistory: Attempted to add notif for locked/gone/disabled user 0
+11-14 02:37:32.810  3048  3048 W BpBinder: Linking to death on android.gui.ISurfaceComposer but there are no threads (yet?) listening to incoming transactions. See ProcessState::startThreadPool and ProcessState::setThreadPoolMaxThreadCount. Generally you should setup the binder threadpool before other initialization steps.
+11-14 02:37:32.810  3048  3048 W ProcessState: Extra binder thread started, but 0 threads requested. Do not use *startThreadPool when zero threads are requested.
