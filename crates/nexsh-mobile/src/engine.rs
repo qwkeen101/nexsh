@@ -606,7 +606,7 @@ mod tests {
     fn slow_links_show_typed_text_before_the_echo() {
         let session = session();
         feed(&session, SessionEvent::Connected);
-        feed(&session, SessionEvent::Latency(Some(Duration::from_millis(400))));
+        feed(&session, SessionEvent::Latency(Some(Duration::from_millis(100))));
         feed(&session, SessionEvent::Output(b"$ ".to_vec()));
         let cursor_col = |session: &Session| {
             let frame = session.snapshot(0).expect("总能取到画面");
@@ -616,7 +616,8 @@ mod tests {
         // 这一行的第一个字先不显示：还不知道服务器回不回显。
         session.text("l", KeyMods::default());
         assert_eq!(cursor_col(&session), 2);
-        // 回显证实之后，接着敲的字立刻出现，光标跟着走。
+        // 回显证实之后，接着敲的字立刻出现，光标跟着走。（回显不会比往返时间早到太多，等一下。）
+        std::thread::sleep(Duration::from_millis(80));
         feed(&session, SessionEvent::Output(b"l".to_vec()));
         session.text("s", KeyMods::default());
         assert_eq!(cursor_col(&session), 4);

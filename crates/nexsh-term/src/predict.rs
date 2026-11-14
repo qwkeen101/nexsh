@@ -30,6 +30,12 @@ const MAX_PENDING: usize = 64;
 const MIN_PATIENCE: Duration = Duration::from_secs(2);
 /// 不知道延迟时，不可预测的输入之后暂停多久。
 const DEFAULT_PAUSE: Duration = Duration::from_millis(300);
+/// 不可预测的输入之后暂停几个往返。链路有抖动，等一个往返不够：它的回显还在路上时就重新开始，
+/// 新的预测会锚在错的位置上。
+const PAUSE_ROUND_TRIPS: u32 = 2;
+/// 回显最快也要一个往返才能回来。比这个比例的往返时间还早到的"证实"，
+/// 只能是更早的输入的回显碰巧长得一样（连敲同一个字母时很常见），不能算数。
+const EARLIEST_ECHO: f32 = 0.6;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Edit {
@@ -53,6 +59,10 @@ pub struct Predictor {
     paused_until: Option<Instant>,
     /// 一个预测最多等多久。
     patience: Duration,
+    /// 预测发出后至少过这么久，回显才可能到。
+    earliest: Duration,
+    /// 出了岔子之后暂停多久。
+    pause: Duration,
 }
 
 impl Predictor {
@@ -85,9 +95,15 @@ impl Predictor {
     /// 发出了不预测的输入（回车、方向键、组合键、粘贴等）。它的结果回来之前光标在哪里说不准，
     /// 所以放弃现有的预测，并暂停一个往返多一点的时间。
     pub fn disturbed(&mut self, round_trip: Option<Duration>, now: Instant) {
+        self.pause = round_trip.map(|rtt| rtt * PAUSE_ROUND_TRIPS).unwrap_or(DEFAULT_PAUSE);
+        self.stumble(now);
+    }
+
+    /// 预测和服务器对不上了：放弃，并且歇一会儿。被放弃的输入的回显还在路上，
+    /// 马上重新开始的话，新的预测会锚在它们到达之前的光标位置上。
+    fn stumble(&mut self, now: Instant) {
         self.forget();
-        let pause = round_trip.map(|rtt| rtt.mul_f32(1.5)).unwrap_or(DEFAULT_PAUSE);
-        self.paused_until = Some(now + pause);
+        self.paused_until = Some(now + self.pause.max(DEFAULT_PAUSE));
     }
 
     /// 现在能不能在行尾接着预测 extra 个字符。
@@ -126,6 +142,8 @@ impl Predictor {
             return false;
         }
         self.patience = (round_trip * 4).max(MIN_PATIENCE);
+        self.earliest = round_trip.mul_f32(EARLIEST_ECHO);
+        self.pause = round_trip * PAUSE_ROUND_TRIPS;
         true
     }
 
@@ -174,19 +192,23 @@ impl Predictor {
             .flatten();
         match reached {
             Some((0, _)) => self.expire(now),
+            // 来得太早的不是这些预测的回显。
+            Some((count, _)) if now.duration_since(self.pending[count - 1].1) < self.earliest => {
+                self.stumble(now);
+            }
             Some((count, line)) => {
                 self.confirmed = line;
                 self.pending.drain(..count);
                 self.trusted = true;
             }
-            None => self.forget(),
+            None => self.stumble(now),
         }
     }
 
     /// 等得太久的预测不会再被证实了（密码提示、不回显的程序），放弃。
     fn expire(&mut self, now: Instant) {
         if self.pending.first().is_some_and(|(_, sent)| now.duration_since(*sent) > self.patience) {
-            self.forget();
+            self.stumble(now);
         }
     }
 
@@ -244,6 +266,8 @@ mod tests {
     use super::*;
 
     const SLOW: Option<Duration> = Some(Duration::from_millis(400));
+    /// 一个往返：输入发出之后，它的回显这么久才到。
+    const TRIP: Duration = Duration::from_millis(400);
 
     /// 叠加预测之后某一行的文字（去掉行尾空白）和光标所在的列。
     fn view(predictor: &mut Predictor, terminal: &Terminal, now: Instant) -> (String, usize) {
@@ -268,6 +292,7 @@ mod tests {
         let (mut terminal, mut predictor, now) = prompt();
         predictor.typed("l", &terminal, SLOW, now);
         terminal.feed(b"l");
+        let now = now + TRIP;
         predictor.reconcile(&terminal, now);
         (terminal, predictor, now)
     }
@@ -281,6 +306,7 @@ mod tests {
 
         // 第一个字的回显到了：第二个字不用再等。
         terminal.feed(b"l");
+        let now = now + TRIP;
         predictor.reconcile(&terminal, now);
         assert_eq!(view(&mut predictor, &terminal, now), ("$ ls".to_string(), 4));
 
@@ -290,6 +316,7 @@ mod tests {
 
         // 回显全部到齐，叠加层空了，画面就是服务器的画面。
         terminal.feed(b"s -la");
+        let now = now + TRIP;
         predictor.reconcile(&terminal, now);
         assert!(predictor.pending.is_empty());
         assert_eq!(view(&mut predictor, &terminal, now), ("$ ls -la".to_string(), 8));
@@ -324,10 +351,27 @@ mod tests {
         let (mut terminal, mut predictor, now) = prompt();
         predictor.typed("ab", &terminal, SLOW, now);
         terminal.feed(b"*");
+        let now = now + TRIP;
         predictor.reconcile(&terminal, now);
         assert!(predictor.pending.is_empty());
         assert!(!predictor.trusted);
+        // 被放弃的输入的回显还在路上，先歇着。
+        predictor.typed("c", &terminal, SLOW, now);
+        assert!(predictor.pending.is_empty());
         assert_eq!(view(&mut predictor, &terminal, now), ("$ *".to_string(), 3));
+    }
+
+    #[test]
+    fn an_echo_that_arrives_too_soon_confirms_nothing() {
+        // 一个没被预测的 c 还在路上时又敲了一个 c：先到的回显是前一个的，
+        // 把它当成后一个的证实，接下来的预测就都锚在错的位置上了。
+        let (mut terminal, mut predictor, now) = prompt();
+        predictor.typed("c", &terminal, SLOW, now);
+        terminal.feed(b"c");
+        predictor.reconcile(&terminal, now + Duration::from_millis(50));
+        assert!(predictor.pending.is_empty());
+        assert!(!predictor.trusted);
+        assert!(predictor.paused_until.is_some());
     }
 
     #[test]
@@ -342,6 +386,7 @@ mod tests {
 
         // 服务器照做：先回显 x，再退两格并清到行尾。
         terminal.feed(b"x\x08\x1b[K\x08\x1b[K");
+        let now = now + TRIP;
         predictor.reconcile(&terminal, now);
         assert!(predictor.pending.is_empty());
         assert!(predictor.confirmed.is_empty());

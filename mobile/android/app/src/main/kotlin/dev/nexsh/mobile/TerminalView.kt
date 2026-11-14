@@ -451,31 +451,36 @@ class TerminalView(context: Context) : View(context) {
             (if (composeInput) 0 else InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
         attributes.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
-        return object : BaseInputConnection(this, false) {
-            /** 输入法正在组合、还没提交的文字（拼音等）。组合期间不发给远端。 */
-            private var composing = ""
-
-            override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
-                composing = text.toString()
-                return true
-            }
-
-            override fun finishComposingText(): Boolean {
-                val pending = composing
-                composing = ""
-                sendText(pending)
-                return true
+        // 给输入法一个真正的编辑缓冲区（fullEditor = true）：组词、替换、提交都由框架在缓冲区上
+        // 按标准语义完成，这里只在文字定下来时把缓冲区里的内容发给远端并清空。输入法随时会回头
+        // 查询自己刚写进去的内容；面对一个永远是空的编辑器，有的输入法会以为没写成而再提交一次。
+        return object : BaseInputConnection(this, true) {
+            private fun flush() {
+                val content = editable ?: return
+                val text = content.toString()
+                content.clear()
+                // 有些输入法把回车当作文字提交。
+                if (text == "\n") sendKey("enter") else sendText(text)
             }
 
             override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-                composing = ""
-                // 有些输入法把回车当作文字提交。
-                if (text.toString() == "\n") sendKey("enter") else sendText(text.toString())
+                super.commitText(text, newCursorPosition)
+                flush()
+                return true
+            }
+
+            // 组词结束（选了字、切走了焦点）：缓冲区里剩下的就是最终的文字。
+            override fun finishComposingText(): Boolean {
+                super.finishComposingText()
+                flush()
                 return true
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                repeat(max(1, beforeLength)) { sendKey("backspace") }
+                // 缓冲区里有还在组词的文字时，删的是它；否则是要终端退格。
+                if (!editable.isNullOrEmpty()) return super.deleteSurroundingText(beforeLength, afterLength)
+                repeat(beforeLength) { sendKey("backspace") }
+                repeat(afterLength) { sendKey("delete") }
                 return true
             }
 
