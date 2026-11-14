@@ -84,6 +84,7 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
     val alt = remember { mutableIntStateOf(OFF) }
     val ctrlTap = remember { mutableLongStateOf(0L) }
     val altTap = remember { mutableLongStateOf(0L) }
+    var chinese by remember { mutableStateOf(false) }
 
     val view = remember {
         TerminalView(context).apply {
@@ -211,6 +212,11 @@ fun TerminalScreen(session: OpenSession, secrets: Secrets, onBack: () -> Unit, o
             Key("Tab") { view.sendKey("tab") }
             Key("Ctrl", ctrl.intValue) { cycle(ctrl, ctrlTap) }
             Key("Alt", alt.intValue) { cycle(alt, altTap) }
+            // 平时输入法逐键提交（打命令跟手）；要打中文时点亮它，输入法才能组词选字。
+            Key("中", if (chinese) LOCKED else OFF) {
+                chinese = !chinese
+                view.composeInput = chinese
+            }
             Key("↑") { view.sendKey("up") }
             Key("↓") { view.sendKey("down") }
             Key("←") { view.sendKey("left") }

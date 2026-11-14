@@ -3,9 +3,11 @@
 
 mod input;
 mod palette;
+mod predict;
 
 pub use input::{KeyMods, bracketed_paste, encode_key};
 pub use palette::{Palette, Rgb};
+pub use predict::Predictor;
 
 use std::sync::{Arc, Mutex};
 
@@ -174,6 +176,25 @@ impl Terminal {
 
     pub fn alt_screen(&self) -> bool {
         self.term.mode().contains(TermMode::ALT_SCREEN)
+    }
+
+    /// 光标在屏幕上的位置，不管它是否可见、画面是否翻到了历史里。
+    pub fn cursor_cell(&self) -> Cursor {
+        let point = self.term.grid().cursor.point;
+        Cursor { row: point.line.0.max(0) as usize, col: point.column.0 }
+    }
+
+    /// 屏幕（不是翻看历史时的可见区域）上这个位置的字符；超出范围算空白。
+    pub fn char_at(&self, row: usize, col: usize) -> char {
+        if row >= self.rows || col >= self.cols {
+            return ' ';
+        }
+        self.term.grid()[Line(row as i32)][Column(col)].c
+    }
+
+    /// 画面是不是翻到了历史里。
+    pub fn is_scrolled(&self) -> bool {
+        self.term.grid().display_offset() != 0
     }
 
     /// 正数向上翻看历史，负数向下。

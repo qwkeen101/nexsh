@@ -12,13 +12,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nexsh_core::{
     AuthMethod, ConnectOptions, Host, LatencyMeter, SessionCommand, SessionEvent, SshError,
     spawn_session,
 };
-use nexsh_term::{KeyMods, SelectionEnd, TermEvent, Terminal, bracketed_paste, encode_key};
+use nexsh_term::{KeyMods, Predictor, SelectionEnd, TermEvent, Terminal, bracketed_paste, encode_key};
 use tokio::sync::mpsc;
 
 use crate::wire::{self, Snapshot, State};
@@ -56,8 +56,20 @@ struct Retry {
     delay: Duration,
 }
 
+/// 一次输入对预测回显意味着什么。
+enum Typing<'a> {
+    /// 普通文字，可以先画出来。
+    Text(&'a str),
+    /// 退格。
+    Erase,
+    /// 其余的一切：结果只有服务器知道。
+    Other,
+}
+
 struct Inner {
     terminal: Terminal,
+    /// 延迟高时把刚敲的字先画出来，见 [`Predictor`]。
+    predictor: Predictor,
     state: State,
     title: String,
     message: String,
@@ -96,9 +108,11 @@ impl Inner {
                 self.state = State::Connected;
                 self.attempt = 0;
                 self.missed_probes = 0;
+                self.predictor.reset();
             }
             SessionEvent::Output(bytes) => {
                 self.terminal.feed(&bytes);
+                self.predictor.reconcile(&self.terminal, Instant::now());
                 for event in self.terminal.take_events() {
                     match event {
                         TermEvent::Title(title) => self.title = title,
@@ -158,6 +172,7 @@ impl Inner {
             self.terminal.take_events();
             self.title.clear();
         }
+        self.predictor.reset();
         self.send(SessionCommand::Close);
         self.commands = None;
         // 这条连接之后的事件一律作废。
@@ -237,6 +252,7 @@ impl Session {
             known_hosts,
             inner: Mutex::new(Inner {
                 terminal: Terminal::new(cols, rows),
+                predictor: Predictor::default(),
                 state: State::Connecting,
                 title: String::new(),
                 message: String::new(),
@@ -358,11 +374,25 @@ impl Session {
 
     /// 原样写给远端的字节。打字时画面回到最新一行，选区取消。
     pub fn input(&self, bytes: Vec<u8>) {
-        let mut inner = self.lock();
+        self.write(bytes, Typing::Other);
+    }
+
+    fn write(&self, bytes: Vec<u8>, typing: Typing) {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
         inner.terminal.clear_selection();
         inner.terminal.scroll_to_bottom();
+        if inner.state == State::Connected {
+            let round_trip = inner.latency.millis().map(Duration::from_millis);
+            let now = Instant::now();
+            match typing {
+                Typing::Text(text) => inner.predictor.typed(text, &inner.terminal, round_trip, now),
+                Typing::Erase => inner.predictor.erased(&inner.terminal, round_trip, now),
+                Typing::Other => inner.predictor.disturbed(round_trip, now),
+            }
+        }
         inner.send(SessionCommand::Input(bytes));
-        drop(inner);
+        drop(guard);
         self.touch();
     }
 
@@ -371,7 +401,8 @@ impl Session {
         let bytes = encode_key(name, mods, self.lock().terminal.app_cursor());
         match bytes {
             Some(bytes) => {
-                self.input(bytes);
+                let plain = !mods.ctrl && !mods.alt;
+                self.write(bytes, if name == "backspace" && plain { Typing::Erase } else { Typing::Other });
                 true
             }
             None => false,
@@ -385,7 +416,7 @@ impl Session {
         if single && (mods.ctrl || mods.alt) && self.key(text, mods) {
             return;
         }
-        self.input(text.as_bytes().to_vec());
+        self.write(text.as_bytes().to_vec(), Typing::Text(text));
     }
 
     pub fn paste(&self, text: &str) {
@@ -396,6 +427,7 @@ impl Session {
     pub fn resize(&self, cols: usize, rows: usize) {
         let mut inner = self.lock();
         if inner.terminal.resize(cols, rows) {
+            inner.predictor.reset();
             let (cols, rows) = inner.terminal.size();
             inner.send(SessionCommand::Resize { cols: cols as u32, rows: rows as u32 });
             drop(inner);
@@ -443,8 +475,10 @@ impl Session {
         if generation == since {
             return None;
         }
-        let inner = self.lock();
-        let frame = inner.terminal.frame();
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let mut frame = inner.terminal.frame();
+        inner.predictor.overlay(&mut frame, &inner.terminal, Instant::now());
         let connected = inner.state == State::Connected;
         Some(wire::encode(&Snapshot {
             state: inner.state,
@@ -566,6 +600,29 @@ mod tests {
         let next = session.snapshot(generation).expect("有输出后画面变了");
         assert_eq!(next[1], State::Connected as u8);
         assert!(next.len() > first.len());
+    }
+
+    #[test]
+    fn slow_links_show_typed_text_before_the_echo() {
+        let session = session();
+        feed(&session, SessionEvent::Connected);
+        feed(&session, SessionEvent::Latency(Some(Duration::from_millis(400))));
+        feed(&session, SessionEvent::Output(b"$ ".to_vec()));
+        let cursor_col = |session: &Session| {
+            let frame = session.snapshot(0).expect("总能取到画面");
+            i16::from_le_bytes(frame[18..20].try_into().unwrap())
+        };
+
+        // 这一行的第一个字先不显示：还不知道服务器回不回显。
+        session.text("l", KeyMods::default());
+        assert_eq!(cursor_col(&session), 2);
+        // 回显证实之后，接着敲的字立刻出现，光标跟着走。
+        feed(&session, SessionEvent::Output(b"l".to_vec()));
+        session.text("s", KeyMods::default());
+        assert_eq!(cursor_col(&session), 4);
+        // 回车的结果只有服务器知道：撤掉预测，画面回到服务器给的样子。
+        session.key("enter", KeyMods::default());
+        assert_eq!(cursor_col(&session), 3);
     }
 
     #[test]

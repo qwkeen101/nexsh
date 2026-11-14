@@ -160,11 +160,28 @@ class TerminalView(context: Context) : View(context) {
         invalidate()
     }
 
-    /** 按控件大小和字号算出行列数，告诉远端。 */
+    private var sentCols = 0
+    private var sentRows = 0
+    private val resizeLater = Runnable { sendGrid() }
+
+    /**
+     * 按控件大小和字号算出行列数，告诉远端。软键盘弹出收起是一段动画，双指缩放是一串连续的变化，
+     * 控件大小在这期间每帧都在变；每变一次就通知一次，远端的 shell 会跟着重画十几遍，
+     * 延迟高时这些重画陆续回来，画面要跳好一阵。所以等尺寸停下来再说，只有第一次立刻通知。
+     */
     private fun applyGrid() {
+        if (sessionId == 0L || width == 0 || height == 0) return
+        removeCallbacks(resizeLater)
+        if (sentCols == 0) sendGrid() else postDelayed(resizeLater, RESIZE_SETTLE_MS)
+    }
+
+    private fun sendGrid() {
         if (sessionId == 0L || width == 0 || height == 0) return
         val cols = max(2, (width / cellWidth).toInt())
         val rows = max(1, (height / cellHeight).toInt())
+        if (cols == sentCols && rows == sentRows) return
+        sentCols = cols
+        sentRows = rows
         Bridge.resize(sessionId, cols, rows)
     }
 
@@ -190,6 +207,7 @@ class TerminalView(context: Context) : View(context) {
 
     override fun onDetachedFromWindow() {
         Choreographer.getInstance().removeFrameCallback(ticker)
+        removeCallbacks(resizeLater)
         super.onDetachedFromWindow()
     }
 
@@ -387,6 +405,15 @@ class TerminalView(context: Context) : View(context) {
         if (sessionId != 0L) Bridge.clearSelection(sessionId)
     }
 
+    /** 中文输入：打开后输入法可以组词选字；关着时逐键提交，字母不会被输入法攒着。 */
+    var composeInput = false
+        set(value) {
+            if (field == value) return
+            field = value
+            val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+            manager.restartInput(this)
+        }
+
     fun showKeyboard() {
         requestFocus()
         val manager = context.getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
@@ -417,7 +444,11 @@ class TerminalView(context: Context) : View(context) {
 
     override fun onCreateInputConnection(attributes: EditorInfo): InputConnection {
         // 不要联想和自动更正：它们会在提交时改写已经发给远端的字符。
-        attributes.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        // 默认按"可见的密码框"报给输入法：这样它每按一个键就提交一个字符。只说"不要联想"的话，
+        // 不少输入法照样把英文字母当作组词中的文字攒着，等空格或选词才一起提交——
+        // 表现就是敲了半天没反应，然后一下子蹦出来。要打中文时切到普通文本模式。
+        attributes.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
+            (if (composeInput) 0 else InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD)
         attributes.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_ACTION_NONE
         return object : BaseInputConnection(this, false) {
@@ -498,5 +529,6 @@ class TerminalView(context: Context) : View(context) {
         private const val SELECTION_COLOR = 0xff2f4a7a.toInt()
         private const val HANDLE_COLOR = 0xff6c9cf5.toInt()
         private const val NO_END = -1
+        private const val RESIZE_SETTLE_MS = 120L
     }
 }
