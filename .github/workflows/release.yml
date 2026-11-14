@@ -237,8 +237,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          # 1.0 之前的版本都标记为预发布。
-          prerelease: ${{ startsWith(github.ref_name, 'v0.') }}
+          # 发成正式版本并标为最新：预发布的版本不会出现在仓库首页的 Releases 一栏里。
+          prerelease: false
+          make_latest: true
           generate_release_notes: true
           body: |
             nexsh ${{ github.ref_name }}
@@ -259,4 +260,4 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           files: dist/*
-          prerelease: ${{ startsWith(env.TAG, 'v0.') }}
+          prerelease: false
